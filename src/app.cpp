@@ -144,9 +144,12 @@ void App::Shutdown() {
         icon_ = nullptr;
         iconOwned_ = false;
     }
+    // 顺序要紧：SyncLayoutFromBoxes 是"把还活着的盒子抄回布局"，它先 clear 再按窗口重建。
+    // 放在 Destroy 之后的话，退出的那一刻窗口全没了，抄回来的就是空表，
+    // 接着 LayoutSave 会把用户所有盒子的定义从 layout.ini 里抹掉。
+    SyncLayoutFromBoxes();
     for (auto& b : boxes_) b->Destroy();
     boxes_.clear();
-    SyncLayoutFromBoxes();
     // 干净退出就把用户的桌面图标恢复；下次启动再按 hide_icons 设置隐藏。
     IconLayerSet(false);
     layout_.hideIcons = false;
