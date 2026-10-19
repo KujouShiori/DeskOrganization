@@ -2,11 +2,12 @@
 setlocal
 rem Builds the Release exe, then the portable zip and the installer, into out\dist\.
 rem Needs the VS 2022 C++ workload and Inno Setup 6.
-rem VERSION is the only place the release version is written; it feeds the file
-rem names and the installer metadata. Batch files here stay ASCII only: cmd reads
-rem them in the console codepage, and non-ASCII bytes in a rem line break parsing.
+rem The release version lives in CMakeLists.txt (DESKORG_VERSION). The configure step
+rem writes it into the build dir as version.txt and it is read back here, so the
+rem version stamped in the exe and the artifact names can never disagree.
+rem Batch files here stay ASCII only: cmd parses them in the console codepage, and
+rem non-ASCII bytes inside a rem line break parsing.
 
-set "VERSION=1.0.0"
 set "NAME=DeskOrganization"
 set "ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 set "DIST=%~dp0..\out\dist"
@@ -14,6 +15,8 @@ set "REL=%~dp0..\out\release"
 
 call "%~dp0build_release.cmd" || exit /b 1
 if not exist "%REL%\%NAME%.exe" exit /b 1
+if not exist "%REL%\version.txt" exit /b 1
+set /p VERSION=<"%REL%\version.txt"
 if not exist "%ISCC%" goto :no_inno
 
 rd /s /q "%DIST%" 2>nul

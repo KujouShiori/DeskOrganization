@@ -26,6 +26,8 @@ RestartApplications=no
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 UninstallDisplayIcon={app}\DeskOrganization.exe
+; 安装向导自己的图标也用它，和 exe 里那份是同一个文件
+SetupIconFile=..\resources\DeskOrganization.ico
 LicenseFile=..\LICENSE
 
 [Files]

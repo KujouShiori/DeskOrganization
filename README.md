@@ -14,7 +14,14 @@ Windows 11 桌面整理工具。桌面上开一块块盒子，文件拖进去就
 发布用的产物用 scripts\package.cmd：先按 Release 配置编译（开优化，C 运行库静态链接进 exe，
 所以免安装版在没有装 VC++ 运行库的机器上也能直接双击），再压出免安装 zip、编出安装包，
 两者都放在 out\dist\。安装包需要另外安装 Inno Setup 6，脚本按默认路径调用它。
-发布版本号只在 scripts\package.cmd 开头写一次，文件名和安装包里的版本都取自那里。
+发布版本号写在 CMakeLists.txt 的 DESKORG_VERSION 里，格式 a.b.c，只此一处：exe 内的版本
+资源、免安装包的压缩包名、安装包里显示的版本都由它生成，配置时抄到构建目录的 version.txt
+供打包脚本读，所以不会出现包名和程序属性页版本不一致。
+
+程序自己的图标在 resources\DeskOrganization.ico，画法和托盘图标共用 src\iconres.cpp 里那套
+像素函数（16/20/24/32/40/48/64/128 八档，.ico 里用位图条目，rc.exe 不收 PNG 压缩的图标）。
+要换配色或改尺寸就跑 scripts\make_icon.cmd，它把两张 .ico 和各档 PNG 导到 out\ 下，
+看过满意再覆盖 resources 里那一份。
 
 ## 使用
 

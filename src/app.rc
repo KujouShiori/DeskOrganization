@@ -1,0 +1,55 @@
+﻿#include <winres.h>
+
+// exe 自己的图标和版本信息。托盘图标是运行时按配色现画的（src/iconres.cpp），
+// 文件图标必须是编译期定死的资源，所以这里用同一套画法生成好的 .ico。
+//
+// 版本号的唯一来源是 CMakeLists.txt 里的 DESKORG_VERSION，CMake 把它拆成
+// -DVER_MAJOR / -DVER_MINOR / -DVER_PATCH 传进来，这里只负责拼成资源要的两种
+// 形式：数字四元组和字符串。仓库里不会再出现第二处版本数字。
+
+#define STRINGIFY2(x) #x
+#define STRINGIFY(x) STRINGIFY2(x)
+
+#ifndef VER_MAJOR
+#define VER_MAJOR 0
+#endif
+#ifndef VER_MINOR
+#define VER_MINOR 0
+#endif
+#ifndef VER_PATCH
+#define VER_PATCH 0
+#endif
+
+#define VER_QUAD VER_MAJOR, VER_MINOR, VER_PATCH, 0
+#define VER_STR STRINGIFY(VER_MAJOR) "." STRINGIFY(VER_MINOR) "." STRINGIFY(VER_PATCH) ".0"
+
+// 图标只有一份，资源 id 用 1，shell 取的就是排在最前面的那组。这里必须是裸文件名：
+// rc.exe 相对自己的工作目录找文件，而 CMake 已经把 resources 里那份拷进构建目录了。
+1 ICON "DeskOrganization.ico"
+
+1 VERSIONINFO
+FILEVERSION VER_QUAD
+PRODUCTVERSION VER_QUAD
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        // 0804 = 中文(简体)，1200 = UTF-16。字符串按宽字符存进资源，不受代码页影响。
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "FileDescription", "DeskOrganization 桌面整理"
+            VALUE "FileVersion", VER_STR
+            VALUE "InternalName", "DeskOrganization"
+            VALUE "LegalCopyright", "MIT License"
+            VALUE "OriginalFilename", "DeskOrganization.exe"
+            VALUE "ProductName", "DeskOrganization"
+            VALUE "ProductVersion", VER_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0804, 1200
+    END
+END
