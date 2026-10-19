@@ -52,6 +52,17 @@ class Box {
     bool Grouped() const { return grouped_; }
     void SetGrouped(bool on);
     std::wstring ActiveTab() const { return activeTab_; }
+
+    // 第二排标签卡：盒子目录下的子文件夹。选中它只改显示的是哪一层，
+    // 以及新拖入文件的落点；已经在盒子里的文件不会被搬动。
+    bool HasSubRow() const;
+    std::vector<std::wstring> SubNames() const;
+    bool SetSubTab(const std::wstring& name);
+    std::wstring ActiveSub() const { return activeSub_; }
+    // 当前真正在显示的那一层，也就是 activeFolder 加上选中的子文件夹。
+    std::wstring displayFolder() const;
+    std::wstring baseFolder() const { return activeFolder(); }
+
     size_t shownCount() const;
     int tabAreaHeight() const { return TabAreaHeight(); }
     std::vector<std::wstring> TabNames() const;
@@ -92,16 +103,26 @@ class Box {
     static D2D1_COLOR_F ColorOf(unsigned rgb);
     void Paint();
     bool InTitleBar(int clientY) const;
-    int TabAreaHeight() const;
-    int TabAt(POINT clientPt) const;
-    float BodyTop() const { return static_cast<float>(TitleH() + TabAreaHeight()); }
-    void SelectMember(size_t index, bool notify);
-    std::vector<size_t> VisibleIndices() const;
     struct TabGeom {
         std::vector<std::wstring> names;
         float x0 = 0, y0 = 0, tabW = 0, tabH = 0, gap = 0;
         int perRow = 1;
     };
+    // 第一排什么时候存在：按类型分卡，或者多标签盒子按成员分卡。
+    bool HasTabRow() const { return IsAggregate() || grouped_; }
+    int TabAreaHeight() const;
+    // 一排标签卡自己的高度（含行间留白），空名字时是 0，这样第二排能接在第一排下面。
+    int RowBlockHeight(const TabGeom& g) const;
+    TabGeom SubGeometry() const;
+    // 命中某一排里的第几个标签，没命中返回 -1。
+    int HitRow(const TabGeom& g, POINT clientPt) const;
+    void PaintRow(const TabGeom& g, const std::wstring& active);
+    // 重新列举 baseFolder 下的一层子目录，第二排只显示这些，不做第三层。
+    void RefreshSubFolders();
+    void ApplyShownFolder();
+    float BodyTop() const { return static_cast<float>(TitleH() + TabAreaHeight()); }
+    void SelectMember(size_t index, bool notify);
+    std::vector<size_t> VisibleIndices() const;
     TabGeom TabGeometry() const;
     void StartDrag(LPARAM lp);
     void DragTo(LPARAM lp);
@@ -134,6 +155,9 @@ class Box {
     std::wstring pendingRename_;    // 编辑框里待确认的内容
     std::wstring committedRename_;  // 已经按回车确认、等应用层处理的新名字
     std::wstring activeTab_;  // 空表示"全部"
+    std::wstring activeSub_;  // 空表示盒子自己那一层
+    // baseFolder 下的子目录名，第二排标签卡就列这些。缓存下来是为了不每帧重新枚举。
+    std::vector<std::wstring> subNames_;
     int scrollRow_ = 0;
     unsigned targetGen_ = 0;
 

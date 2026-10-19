@@ -86,8 +86,11 @@ bool ToggleMergeMember(Layout& layout, const std::wstring& boxName, const std::w
     if (!box.members.empty()) box.grouped = false;
 
     // 当前选中的标签卡如果被移出去了，就回到第一张，避免指向一个已经不存在的成员。
+    const std::wstring tabBefore = box.tab;
     if (!box.tab.empty() && !box.members.empty() && !IsMergeMember(layout, box.name, box.tab)) box.tab.clear();
     if (box.members.empty()) box.tab.clear();
+    // 换成员等于换目录，第二排那一层是相对旧目录记的，留着会指向一个不相干的子文件夹。
+    if (box.tab != tabBefore) box.sub.clear();
 
     return true;
 }

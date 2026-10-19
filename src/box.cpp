@@ -2,10 +2,13 @@
 
 #include <windowsx.h>
 
+#include <shlwapi.h>
+
 #include <algorithm>
 
 #include "fileop.h"
 #include "iconview.h"
+#include "menuicons.h"
 #include "messages.h"
 #include "util.h"
 
@@ -17,6 +20,9 @@ static constexpr int kCmdOpenFolder = 4;
 static constexpr int kCmdRename = 6;
 static constexpr int kCmdMerge = 7;
 static constexpr int kCmdGroup = 5;
+
+// 第二排标签卡里的「回到盒子自己那一层」那一张。
+static const wchar_t* kThisLevel = L"本层";
 
 bool Box::Register(HINSTANCE instance) {
     WNDCLASSEXW wc = {};
@@ -75,10 +81,14 @@ bool Box::Create(const BoxConfig& cfg, const std::wstring& resolvedFolder,
     } else {
         grouped_ = cfg_.grouped;
         activeTab_ = cfg_.tab;
+        // 手写成「全部」和留空是同一个意思，不能让 activeTab_ 拿去和分类名比。
+        if (activeTab_ == L"全部") activeTab_.clear();
         resolvedFolder_ = resolvedFolder;
-        content_.SetFolder(resolvedFolder_, static_cast<unsigned>(44 * Scale()), &iconCache_);
-        content_.Refresh();
     }
+    // 配置里的 sub 只有当当前目录下真有这么一个子文件夹时才算数，
+    // 剩下的校验和目录切换都在 RefreshContent 里做。
+    if (!cfg_.sub.empty()) activeSub_ = cfg_.sub;
+    RefreshContent();
 
     ApplyRegion();
     SetAlpha(kDefaultAlpha);
@@ -162,7 +172,14 @@ void Box::OpenItem(int index) {
 }
 
 void Box::RefreshContent() {
-    content_.SetFolder(activeFolder(), static_cast<unsigned>(44 * Scale()), &iconCache_);
+    RefreshSubFolders();
+    // 子文件夹被删掉或被搬到别处了，就退回本层：显示一个不存在的目录会让盒子变成空白框。
+    if (!activeSub_.empty() && !PathExists(JoinPath(activeFolder(), activeSub_))) {
+        Log(L"盒子 %s 的第二层 %s 已经不存在，退回本层", cfg_.name.c_str(), activeSub_.c_str());
+        activeSub_.clear();
+        PostMessageW(TheTrayWnd(), WM_APP_LAYOUT_DIRTY, 0, 0);
+    }
+    content_.SetFolder(displayFolder(), static_cast<unsigned>(44 * Scale()), &iconCache_);
     content_.Refresh();
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -207,14 +224,18 @@ bool Box::AcceptFiles(const std::vector<std::wstring>& paths) {
     // 移走之前先记下这些图标在桌面上的格子，撤销时要按这个坐标放回去。
     std::vector<IconPosition> before = IconViewCaptureInDir(paths, DesktopPath());
 
+    // 落点是当前显示的那一层：正看着子文件夹，拖进来的就该在这里，所见即所得。
+    const std::wstring target = displayFolder();
     std::vector<MovedEntry> moves;
     std::wstring err;
-    if (!MoveFilesTo(paths, resolvedFolder_, hwnd_, moves, err)) {
+    if (!MoveFilesTo(paths, target, hwnd_, moves, err)) {
         Log(L"盒子 %s 收文件失败：%s", cfg_.name.c_str(), err.c_str());
         return false;
     }
     if (!moves.empty()) {
-        UndoHistoryAdd(std::move(moves), L"把 " + std::to_wstring(moves.size()) + L" 项放进「" + cfg_.name + L"」",
+        std::wstring where = cfg_.name;
+        if (!activeSub_.empty()) where += L"/" + activeSub_;
+        UndoHistoryAdd(std::move(moves), L"把 " + std::to_wstring(moves.size()) + L" 项放进「" + where + L"」",
                        std::move(before));
     }
     RefreshContent();
@@ -242,6 +263,7 @@ void Box::Current(BoxConfig& out) const {
     out.collapsed = cfg_.collapsed;
     out.grouped = grouped_;
     out.tab = activeTab_;
+    out.sub = activeSub_;
 }
 
 void Box::ReleaseTarget() {
@@ -384,25 +406,10 @@ void Box::Paint() {
                   DWRITE_MEASURING_MODE_NATURAL);
 
     FLOAT bodyTop = static_cast<FLOAT>(TitleH());
-    if (grouped_ && !cfg_.collapsed) {
-        TabGeom g = TabGeometry();
-        bodyTop = static_cast<FLOAT>(TitleH() + TabAreaHeight());
-        for (size_t i = 0; i < g.names.size(); ++i) {
-            int row = static_cast<int>(i / g.perRow);
-            int col = static_cast<int>(i % g.perRow);
-            FLOAT tx = g.x0 + col * (g.tabW + g.gap);
-            FLOAT ty = g.y0 + row * (g.tabH + 4.0f * Scale());
-            D2D1_RECT_F tr = D2D1::RectF(tx, ty, tx + g.tabW, ty + g.tabH);
-            bool active = (g.names[i] == L"全部") ? activeTab_.empty() : (g.names[i] == activeTab_);
-            if (active) {
-                D2D1_ROUNDED_RECT pill = D2D1::RoundedRect(tr, 5.0f * Scale(), 5.0f * Scale());
-                rt_->FillRoundedRectangle(pill, titleBrush_);
-                rt_->DrawRoundedRectangle(pill, edgeBrush_, 1.0f);
-            }
-            rt_->DrawText(g.names[i].c_str(), static_cast<UINT32>(g.names[i].size()), labelFormat_, &tr,
-                          active ? textBrush_ : edgeBrush_, D2D1_DRAW_TEXT_OPTIONS_CLIP,
-                          DWRITE_MEASURING_MODE_NATURAL);
-        }
+    if (!cfg_.collapsed) {
+        if (HasTabRow()) PaintRow(TabGeometry(), activeTab_.empty() ? L"全部" : activeTab_);
+        if (HasSubRow()) PaintRow(SubGeometry(), activeSub_.empty() ? kThisLevel : activeSub_);
+        bodyTop = BodyTop();
     }
 
     if (!cfg_.collapsed) {
@@ -503,35 +510,35 @@ void Box::ToggleCollapsed() {
 }
 
 void Box::ShowContextMenu(POINT screenPt) {
-    HMENU menu = CreatePopupMenu();
-    if (!menu) return;
-    AppendMenuW(menu, MF_STRING, kCmdCollapse, cfg_.collapsed ? L"展开盒子" : L"收起盒子");
-    AppendMenuW(menu, MF_STRING, kCmdRename, L"重命名（直接输入，回车确认）");
-    AppendMenuW(menu, MF_STRING, kCmdMerge, L"与其他盒子合并成标签盒");
-    AppendMenuW(menu, MF_STRING, kCmdOpenFolder, L"在资源管理器中打开目录");
-    AppendMenuW(menu, MF_STRING, kCmdGroup, grouped_ ? L"关闭盒内分类" : L"按类型分标签卡");
+    // 菜单项左侧的小图形由 IconMenu 现画：owner-draw 之后勾选列、图形和文字都要自己摆。
+    IconMenu menu;
+    menu.Add(kCmdCollapse, cfg_.collapsed ? Glyph::Expand : Glyph::Collapse,
+             cfg_.collapsed ? L"展开盒子" : L"收起盒子");
+    menu.Add(kCmdRename, Glyph::Rename, L"重命名（直接输入，回车确认）");
+    menu.Add(kCmdMerge, Glyph::Merge, L"与其他盒子合并成标签盒");
+    menu.Add(kCmdOpenFolder, Glyph::OpenFolder, L"在资源管理器中打开目录");
+    menu.Add(kCmdGroup, grouped_ ? Glyph::Ungroup : Glyph::Category,
+             grouped_ ? L"关闭盒内分类" : L"按类型分标签卡");
 
     std::wstring undoLabel;
     if (UndoHistoryLastLabel(undoLabel)) {
-        AppendMenuW(menu, MF_STRING, kCmdUndo, (L"撤销：" + undoLabel).c_str());
+        menu.Add(kCmdUndo, Glyph::Undo, L"撤销：" + undoLabel);
     } else {
-        AppendMenuW(menu, MF_GRAYED, kCmdUndo, L"没有可撤销的操作");
+        menu.Add(kCmdUndo, Glyph::Undo, L"没有可撤销的操作", false);
     }
 
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, kCmdDelete, L"删除这个盒子");
-    SetForegroundWindow(hwnd_);
-    int cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_NONOTIFY | TPM_RETURNCMD,
-                             screenPt.x, screenPt.y, 0, hwnd_, nullptr);
-    PostMessageW(hwnd_, WM_NULL, 0, 0);
-    DestroyMenu(menu);
+    menu.Separator();
+    menu.Add(kCmdDelete, Glyph::Delete, L"删除这个盒子");
+
+    int cmd = menu.Track(hwnd_, screenPt);
 
     switch (cmd) {
         case kCmdCollapse:
             ToggleCollapsed();
             break;
         case kCmdOpenFolder:
-            ShellExecuteW(nullptr, L"open", resolvedFolder_.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            // 开的是当前显示的那一层：正看着子目录，就应该在那里被打开。
+            ShellExecuteW(nullptr, L"open", displayFolder().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
             break;
         case kCmdRename:
             BeginRename();
@@ -581,6 +588,12 @@ LRESULT CALLBACK Box::WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             EndPaint(h, &ps);
             return 0;
         }
+        case WM_MEASUREITEM:
+            if (IconMenu::HandleMeasureItem(lp)) return TRUE;
+            break;
+        case WM_DRAWITEM:
+            if (IconMenu::HandleDrawItem(lp)) return TRUE;
+            break;
         case WM_SIZE: {
             int w = LOWORD(lp);
             int hh = HIWORD(lp);
@@ -598,11 +611,22 @@ LRESULT CALLBACK Box::WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 self->StartDrag(lp);
                 return 0;
             }
-            int tab = self->TabAt(POINT{GET_X_LPARAM(lp), cy});
-            if (tab >= 0) {
-                auto names = self->TabNames();
-                if (tab < static_cast<int>(names.size())) self->SetCategoryTab(names[tab]);
-                return 0;
+            const POINT pt{GET_X_LPARAM(lp), cy};
+            if (self->HasTabRow()) {
+                int i = self->HitRow(self->TabGeometry(), pt);
+                if (i >= 0) {
+                    auto names = self->TabNames();
+                    self->SetCategoryTab(names[static_cast<size_t>(i)]);
+                    return 0;
+                }
+            }
+            if (self->HasSubRow()) {
+                int i = self->HitRow(self->SubGeometry(), pt);
+                if (i >= 0) {
+                    auto subs = self->SubNames();
+                    self->SetSubTab(subs[static_cast<size_t>(i)]);
+                    return 0;
+                }
             }
             break;
         }
@@ -675,7 +699,7 @@ LRESULT CALLBACK Box::WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(h, msg, wp, lp);
 }
 
-// ---- 盒内二级分类：只改显示，不动任何文件 ----
+// ---- 第一排标签卡：按类型或按成员分卡，只改显示，不动任何文件 ----
 
 std::vector<std::wstring> Box::TabNames() const {
     if (IsAggregate()) return memberNames_;  // 多标签盒子：标签卡就是成员盒子，不给"全部"，否则拖进来不知道该放哪个目录
@@ -694,18 +718,24 @@ std::vector<std::wstring> Box::TabNames() const {
     return names;
 }
 
-int Box::TabAreaHeight() const {
-    if (!grouped_) return 0;
-    TabGeom g = TabGeometry();
+int Box::RowBlockHeight(const TabGeom& g) const {
+    if (g.names.empty()) return 0;
     int rows = static_cast<int>((g.names.size() + g.perRow - 1) / g.perRow);
     return static_cast<int>(rows * (g.tabH + 4.0f * Scale())) + 4;
+}
 
+int Box::TabAreaHeight() const {
+    // 两排各自算，第二排不存在的时候高度就是 0，盒子看起来和以前一样。
+    int h = 0;
+    if (HasTabRow()) h += RowBlockHeight(TabGeometry());
+    if (HasSubRow()) h += RowBlockHeight(SubGeometry());
+    return h;
 }
 
 Box::TabGeom Box::TabGeometry() const {
     float s = Scale();
     TabGeom g;
-    g.names = TabNames();
+    g.names = HasTabRow() ? TabNames() : std::vector<std::wstring>();
     g.x0 = 10.0f * s;
     g.y0 = static_cast<float>(TitleH()) + 4.0f * s;
     g.tabW = kTabW * s;
@@ -717,24 +747,102 @@ Box::TabGeom Box::TabGeometry() const {
     g.perRow = static_cast<int>(usable / (g.tabW + g.gap));
     if (g.perRow < 1) g.perRow = 1;
     return g;
-
 }
 
-int Box::TabAt(POINT clientPt) const {
-    if (!grouped_) return -1;
+Box::TabGeom Box::SubGeometry() const {
+    // 宽度、每行几张这些算法和第一排一样，只是接在它下面，名字换成子目录。
     TabGeom g = TabGeometry();
-    int top = TitleH();
-    if (clientPt.y < top || clientPt.y > top + TabAreaHeight()) return -1;
+    const int firstRowHeight = RowBlockHeight(g);
+    g.names = HasSubRow() ? SubNames() : std::vector<std::wstring>();
+    g.y0 = static_cast<float>(TitleH()) + static_cast<float>(firstRowHeight) + 4.0f * Scale();
+    return g;
+}
+
+int Box::HitRow(const TabGeom& g, POINT clientPt) const {
     for (size_t i = 0; i < g.names.size(); ++i) {
         int row = static_cast<int>(i / g.perRow);
         int col = static_cast<int>(i % g.perRow);
-        float x = g.x0 + col * (g.tabW + g.gap);
-        float y = g.y0 + row * (g.tabH + 4.0f * Scale());
+        float x = g.x0 + static_cast<float>(col) * (g.tabW + g.gap);
+        float y = g.y0 + static_cast<float>(row) * (g.tabH + 4.0f * Scale());
         if (clientPt.x >= x && clientPt.x < x + g.tabW && clientPt.y >= y && clientPt.y < y + g.tabH) {
             return static_cast<int>(i);
         }
     }
     return -1;
+}
+
+void Box::PaintRow(const TabGeom& g, const std::wstring& active) {
+    if (!rt_) return;
+    for (size_t i = 0; i < g.names.size(); ++i) {
+        int row = static_cast<int>(i / g.perRow);
+        int col = static_cast<int>(i % g.perRow);
+        FLOAT tx = g.x0 + static_cast<FLOAT>(col) * (g.tabW + g.gap);
+        FLOAT ty = g.y0 + static_cast<FLOAT>(row) * (g.tabH + 4.0f * Scale());
+        D2D1_RECT_F tr = D2D1::RectF(tx, ty, tx + g.tabW, ty + g.tabH);
+        const bool on = g.names[i] == active;
+        if (on) {
+            D2D1_ROUNDED_RECT pill = D2D1::RoundedRect(tr, 5.0f * Scale(), 5.0f * Scale());
+            rt_->FillRoundedRectangle(pill, titleBrush_);
+            rt_->DrawRoundedRectangle(pill, edgeBrush_, 1.0f);
+        }
+        rt_->DrawText(g.names[i].c_str(), static_cast<UINT32>(g.names[i].size()), labelFormat_, &tr,
+                      on ? textBrush_ : edgeBrush_, D2D1_DRAW_TEXT_OPTIONS_CLIP, DWRITE_MEASURING_MODE_NATURAL);
+    }
+}
+
+void Box::RefreshSubFolders() {
+    subNames_.clear();
+    // 第二层列的永远是「盒子当前目录」下面的一层子目录，不是正在显示的那个子目录里面的内容，
+    // 否则一路点下去就变成了文件浏览器，也就没有"二级"这个上限了。
+    const std::wstring base = activeFolder();
+    if (base.empty()) return;
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileW(JoinPath(base, L"*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        std::wstring name = fd.cFileName;
+        if (name == L"." || name == L"..") continue;
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_SYSTEM) continue;
+        subNames_.push_back(name);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    std::sort(subNames_.begin(), subNames_.end(), [](const std::wstring& a, const std::wstring& b) {
+        return StrCmpLogicalW(a.c_str(), b.c_str()) < 0;
+    });
+}
+
+bool Box::HasSubRow() const {
+    // 有一个子目录就值得多一排；已经选中的那个子目录即使被删了也要留着，
+    // 好让人（或者自检）点回「本层」。
+    return !subNames_.empty() || !activeSub_.empty();
+}
+
+std::vector<std::wstring> Box::SubNames() const {
+    std::vector<std::wstring> out;
+    out.push_back(kThisLevel);
+    for (const auto& n : subNames_) out.push_back(n);
+    return out;
+}
+
+std::wstring Box::displayFolder() const {
+    const std::wstring base = activeFolder();
+    if (activeSub_.empty()) return base;
+    return JoinPath(base, activeSub_);
+}
+
+bool Box::SetSubTab(const std::wstring& name) {
+    auto names = SubNames();
+    auto it = std::find(names.begin(), names.end(), name);
+    if (it == names.end()) return false;
+    // 「本层」和配置里 sub 留空是同一个意思。
+    const std::wstring next = (name == kThisLevel) ? std::wstring() : name;
+    if (next == activeSub_) return true;
+    activeSub_ = next;
+    scrollRow_ = 0;
+    RefreshContent();
+    PostMessageW(TheTrayWnd(), WM_APP_LAYOUT_DIRTY, 0, 0);
+    return true;
 }
 
 size_t Box::shownCount() const {
@@ -796,10 +904,10 @@ void Box::SelectMember(size_t index, bool notify) {
     if (index >= memberFolders_.size()) return;
     activeTab_ = memberNames_[index];
     resolvedFolder_ = memberFolders_[index];
-    content_.SetFolder(resolvedFolder_, static_cast<unsigned>(44 * Scale()), &iconCache_);
-    content_.Refresh();
+    // 换成员等于换目录，第二层是相对旧目录列出来的，留着会指到一个不相干的子文件夹。
+    activeSub_.clear();
     scrollRow_ = 0;
-    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+    RefreshContent();
     if (notify) PostMessageW(TheTrayWnd(), WM_APP_LAYOUT_DIRTY, 0, 0);
 }
 

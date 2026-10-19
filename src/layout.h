@@ -10,9 +10,13 @@ struct BoxConfig {
     RECT rect{};              // 相对桌面原点的物理像素
     bool collapsed = false;
     std::wstring folder;      // 相对 box_root 或绝对路径，留空则用段名
-    // 盒内二级分类：只是显示分组，不移动文件。tab 空表示"全部"。
+    // 第一排标签卡：grouped = 1 按文件类型分卡，tab 是当前选中的分类名，空表示「全部」。
+    // 多标签盒子里第一排换成成员名，这时 grouped 一定被关闭。
     bool grouped = false;
     std::wstring tab;
+    // 第二排标签卡：当前显示的是盒子目录下的哪一层。留空表示盒子本身那一层，
+    // 非空时是相对当前目录的子文件夹名，只影响显示和拖入的落点，不移动任何文件。
+    std::wstring sub;
     // 多标签合并：逗号分隔的成员盒子名。非空时这个盒子只显示成员标签卡，
     // 成员盒子自己被隐藏（配置仍在，拆掉合并后自动恢复显示）。
     std::wstring members;

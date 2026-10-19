@@ -186,6 +186,7 @@ bool LayoutLoadFrom(Layout& out, const std::wstring& path) {
         c.folder = GetRaw(doc, i, end, L"folder");
         c.grouped = GetInt(doc, i, end, L"grouped", 0) != 0;
         c.tab = GetRaw(doc, i, end, L"tab");
+        c.sub = GetRaw(doc, i, end, L"sub");
         c.members = GetRaw(doc, i, end, L"members");
 
         out.boxes.push_back(std::move(c));
@@ -246,6 +247,8 @@ bool LayoutSaveTo(const Layout& in, const std::wstring& path) {
         doc.lines.push_back(L"; [general] theme = auto 跟随系统深浅色，也可以写 light 或 dark 固定。");
         doc.lines.push_back(L"; grouped = 1 让盒子按文件类型分标签卡显示（只是分组显示，不会移动任何文件）。");
         doc.lines.push_back(L"; tab 是当前选中的分类名，留空表示「全部」。可选值见盒子内的标签卡。");
+        doc.lines.push_back(L"; sub 是盒子里当前显示的第二层，也就是 folder 下面的一个子文件夹名；留空表示盒子自己那一层。");
+        doc.lines.push_back(L"; 子文件夹不存在时按留空处理。这一排只改显示和拖进去的落点，不会移动已经存在的文件。");
         doc.lines.push_back(L"; members = 逗号分隔的成员盒子名，把这个盒子变成多标签盒子：每个标签卡显示一个成员盒子的目录。");
         doc.lines.push_back(L"; 成员盒子会被自动隐藏，删掉 members 那一行就各自恢复显示。");
         doc.lines.push_back(L"; [rule:名字] 是自动整理规则：box = 命中后归入的盒子（没有就建），");
@@ -315,6 +318,7 @@ bool LayoutSaveTo(const Layout& in, const std::wstring& path) {
         SetKey(doc, sec, L"folder", b.folder);
         SetKey(doc, sec, L"grouped", b.grouped ? L"1" : L"0");
         SetKey(doc, sec, L"tab", b.tab);
+        SetKey(doc, sec, L"sub", b.sub);
         SetKey(doc, sec, L"members", b.members);
     }
 

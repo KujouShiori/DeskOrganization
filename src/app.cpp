@@ -13,6 +13,7 @@
 #include "iconlayer.h"
 #include "iconres.h"
 #include "iconview.h"
+#include "menuicons.h"
 #include "merge.h"
 #include "organize.h"
 #include "rename.h"
@@ -284,41 +285,38 @@ void App::RemoveTray() {
 }
 
 void App::ShowTrayMenu(POINT screenPt) {
-    HMENU menu = CreatePopupMenu();
-    if (!menu) return;
-    AppendMenuW(menu, MF_STRING, CmdNewBox, L"新建盒子");
-    AppendMenuW(menu, MF_STRING, CmdToggleVisible, hidden_ ? L"显示所有盒子" : L"隐藏所有盒子");
-    AppendMenuW(menu, MF_STRING, CmdSaveNow, L"立即保存布局");
-    AppendMenuW(menu, MF_STRING, CmdToggleIcons, IconLayerIsHidden() ? L"显示桌面图标" : L"隐藏桌面图标");
+    IconMenu menu;
+    menu.Add(CmdNewBox, Glyph::NewBox, L"新建盒子");
+    menu.Add(CmdToggleVisible, hidden_ ? Glyph::ShowBoxes : Glyph::HideBoxes,
+             hidden_ ? L"显示所有盒子" : L"隐藏所有盒子");
+    menu.Add(CmdSaveNow, Glyph::SaveNow, L"立即保存布局");
+    menu.Add(CmdToggleIcons, IconLayerIsHidden() ? Glyph::ShowIcons : Glyph::HideIcons,
+             IconLayerIsHidden() ? L"显示桌面图标" : L"隐藏桌面图标");
     std::wstring undoLabel;
     if (UndoHistoryLastLabel(undoLabel)) {
-        AppendMenuW(menu, MF_STRING, CmdUndo, (L"撤销：" + undoLabel).c_str());
+        menu.Add(CmdUndo, Glyph::Undo, L"撤销：" + undoLabel);
     } else {
-        AppendMenuW(menu, MF_GRAYED, CmdUndo, L"没有可撤销的操作");
+        menu.Add(CmdUndo, Glyph::Undo, L"没有可撤销的操作", false);
     }
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    menu.Separator();
     if (!layout_.rules.empty()) {
-        AppendMenuW(menu, MF_STRING, CmdRunRules, L"按规则整理（只处理新文件）");
-        AppendMenuW(menu, MF_STRING, CmdSweepNow, L"按规则整理现存全部文件");
+        menu.Add(CmdRunRules, Glyph::RunRules, L"按规则整理（只处理新文件）");
+        menu.Add(CmdSweepNow, Glyph::SweepRules, L"按规则整理现存全部文件");
     }
-    AppendMenuW(menu, MF_STRING, CmdBackupLayout, L"备份桌面图标布局");
+    menu.Add(CmdBackupLayout, Glyph::Backup, L"备份桌面图标布局");
     if (NewestBackup().empty()) {
-        AppendMenuW(menu, MF_GRAYED, CmdRestoreLayout, L"还原桌面图标布局（无备份）");
+        menu.Add(CmdRestoreLayout, Glyph::Restore, L"还原桌面图标布局（无备份）", false);
     } else {
-        AppendMenuW(menu, MF_STRING, CmdRestoreLayout, L"还原桌面图标布局（最近一次）");
+        menu.Add(CmdRestoreLayout, Glyph::Restore, L"还原桌面图标布局（最近一次）");
     }
     std::wstring shellCmd;
     const bool shellOn = shellmenu::IsInstalled(shellCmd);
-    AppendMenuW(menu, MF_STRING, CmdToggleShellMenu,
-                shellOn ? L"从桌面右键菜单移除撤销入口" : L"加入桌面右键菜单（撤销入口）");
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, CmdQuit, L"退出");
+    menu.Add(CmdToggleShellMenu, shellOn ? Glyph::ShellMenuOff : Glyph::ShellMenuOn,
+             shellOn ? L"从桌面右键菜单移除撤销入口" : L"加入桌面右键菜单（撤销入口）");
+    menu.Separator();
+    menu.Add(CmdQuit, Glyph::Quit, L"退出");
 
-    SetForegroundWindow(tray_);
-    int id = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_NONOTIFY | TPM_RETURNCMD,
-                            screenPt.x, screenPt.y, 0, tray_, nullptr);
-    PostMessageW(tray_, WM_NULL, 0, 0);
-    DestroyMenu(menu);
+    int id = menu.Track(tray_, screenPt);
     if (id) OnCommand(id);
 }
 
@@ -464,6 +462,12 @@ LRESULT CALLBACK App::WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_APP_BOX_DELETE:
             self->DeleteBoxByHwnd(reinterpret_cast<HWND>(wp));
             return 0;
+        case WM_MEASUREITEM:
+            if (IconMenu::HandleMeasureItem(lp)) return TRUE;
+            return DefWindowProcW(h, msg, wp, lp);
+        case WM_DRAWITEM:
+            if (IconMenu::HandleDrawItem(lp)) return TRUE;
+            return DefWindowProcW(h, msg, wp, lp);
         case WM_SETTINGCHANGE: {
             // 深浅色切换也是这条广播，托盘图标跟着换一次配色。
             auto* area = reinterpret_cast<const wchar_t*>(lp);
@@ -592,6 +596,7 @@ void AddRuleChecks(std::vector<Check>& checks);
 void AddUndoPersistenceChecks(std::vector<Check>& checks, const std::wstring& path);
 void AddCategoryChecks(std::vector<Check>& checks, HINSTANCE hi);
 void AddMultiTabChecks(std::vector<Check>& checks, HINSTANCE hi);
+void AddSubChecks(std::vector<Check>& checks, HINSTANCE hi);
 void AddThemeChecks(std::vector<Check>& checks, HINSTANCE hi);
 void AddShellMenuChecks(std::vector<Check>& checks);
 void AddHoldChecks(std::vector<Check>& checks);
@@ -600,6 +605,7 @@ void AddInlineRenameChecks(std::vector<Check>& checks, HINSTANCE hi);
 void AddGeometryChecks(std::vector<Check>& checks);
 void AddMergeChecks(std::vector<Check>& checks);
 void AddIconChecks(std::vector<Check>& checks);
+void AddGlyphChecks(std::vector<Check>& checks);
 
 int AppSelfTest() {
     std::vector<Check> checks;
@@ -1019,6 +1025,7 @@ int AppSelfTest() {
     AddUndoPersistenceChecks(checks, undoFile);
     AddCategoryChecks(checks, hi);
     AddMultiTabChecks(checks, hi);
+    AddSubChecks(checks, hi);
     AddThemeChecks(checks, hi);
     AddShellMenuChecks(checks);
     AddHoldChecks(checks);
@@ -1027,6 +1034,7 @@ int AppSelfTest() {
     AddGeometryChecks(checks);
     AddMergeChecks(checks);
     AddIconChecks(checks);
+    AddGlyphChecks(checks);
 
     // 图形设备必须在上面这些检查之后释放：它们里面还会创建盒子窗口并真的绘制，
     // 提前释放会让 Paint 拿不到 render target，表现为盒子一片空白。
@@ -1856,6 +1864,273 @@ void AddMultiTabChecks(std::vector<Check>& checks, HINSTANCE hi) {
     DeleteFileW(dropMe.c_str());
 }
 
+// 盒内第二排标签卡：盒子目录下面那一层的子文件夹。这里要紧的三件事：只有两级
+// （第二排列的永远是盒子目录的直接子目录，进去之后不再往里列）、拖进来的落点跟着
+// 当前显示的那一层走、以及配置里写了一个已经不存在的子目录时必须退回本层，
+// 而不是显示一个空盒子。顺带补上多标签盒子第一排没画出来的旧缺口。
+void AddSubChecks(std::vector<Check>& checks, HINSTANCE hi) {
+    auto add = [&](const char* n, bool ok, std::string detail = {}) {
+        checks.push_back(Check{n, ok, std::move(detail)});
+    };
+
+    const std::wstring root = AppFile(L"sub_root");
+    const std::wstring deep = JoinPath(root, L"2024");
+    const std::wstring deeper = JoinPath(deep, L"更里面");
+    const std::wstring other = JoinPath(root, L"报告");
+    const std::wstring flat = AppFile(L"sub_flat");
+    for (const auto& d : {root, deep, deeper, other, flat}) EnsureDirExists(d);
+    TouchFile(JoinPath(root, L"a.txt"), "1");
+    TouchFile(JoinPath(root, L"b.png"), "2");
+    TouchFile(JoinPath(deep, L"c.txt"), "3");
+    TouchFile(JoinPath(deep, L"d.md"), "4");
+    TouchFile(JoinPath(deep, L"e.docx"), "5");
+    TouchFile(JoinPath(other, L"f.log"), "6");
+    TouchFile(JoinPath(flat, L"g.txt"), "7");
+
+    Box::Register(hi);
+
+    // 没有子目录的盒子不该多出第二排。
+    Box plain;
+    BoxConfig plainCfg;
+    plainCfg.name = L"平盒子";
+    plainCfg.rect = RECT{40, 460, 40 + 380, 460 + 260};
+    add("sub_plain_created", plain.Create(plainCfg, flat));
+    PumpMessages(300);
+    add("sub_area_zero_without_dirs", !plain.HasSubRow() && plain.tabAreaHeight() == 0,
+        "area=" + std::to_string(plain.tabAreaHeight()));
+    plain.Destroy();
+
+    // 同一份目录当成员盒子时，第一排必须画出来：以前 TabAreaHeight 只认 grouped_，
+    // 多标签盒子的成员标签卡既看不见也点不到。
+    Box aggFlat;
+    BoxConfig aggFlatCfg;
+    aggFlatCfg.name = L"平合集";
+    aggFlatCfg.rect = RECT{40, 460, 40 + 380, 460 + 260};
+    aggFlatCfg.members = L"平盒子";
+    add("sub_aggregate_flat_created", aggFlat.Create(aggFlatCfg, flat, {{L"平盒子", flat}}));
+    PumpMessages(300);
+    add("sub_aggregate_first_row_area_positive", aggFlat.tabAreaHeight() > 0,
+        "area=" + std::to_string(aggFlat.tabAreaHeight()));
+    aggFlat.SetAlpha(255);
+    PumpMessages(300);
+    {
+        RECT br{};
+        GetWindowRect(aggFlat.hwnd(), &br);
+        // 只有一张成员标签（x 10..86），选中块取 x=22 避开文字，再取 x=150 那张
+        // 标签之外的底色对照。第一排在 y 34..60，所以取 47。
+        const POINT pillPt{br.left + 22, br.top + 47};
+        const POINT gapPt{br.left + 150, br.top + 47};
+        bool pillOwned = WindowFromPoint(pillPt) == aggFlat.hwnd();
+        bool gapOwned = WindowFromPoint(gapPt) == aggFlat.hwnd();
+        HDC screen = GetDC(nullptr);
+        COLORREF pill = GetPixel(screen, pillPt.x, pillPt.y);
+        COLORREF gap = GetPixel(screen, gapPt.x, gapPt.y);
+        ReleaseDC(nullptr, screen);
+        const Palette want = ThemeCurrent();
+        auto colorNear = [](COLORREF got, unsigned rgb) {
+            return abs(GetRValue(got) - (int)((rgb >> 16) & 0xFF)) <= 8 &&
+                   abs(GetGValue(got) - (int)((rgb >> 8) & 0xFF)) <= 8 &&
+                   abs(GetBValue(got) - (int)(rgb & 0xFF)) <= 8;
+        };
+        char d[160];
+        snprintf(d, sizeof d, "pill=(%d,%d,%d) want=(%d,%d,%d) gap=(%d,%d,%d) body=(%d,%d,%d) owned=%d/%d painted=%d",
+                 GetRValue(pill), GetGValue(pill), GetBValue(pill), (want.title >> 16) & 0xFF, (want.title >> 8) & 0xFF,
+                 want.title & 0xFF, GetRValue(gap), GetGValue(gap), GetBValue(gap), want.body >> 16,
+                 (want.body >> 8) & 0xFF, want.body & 0xFF, pillOwned ? 1 : 0, gapOwned ? 1 : 0,
+                 aggFlat.painted() ? 1 : 0);
+        add("sub_aggregate_first_row_painted",
+            pillOwned && gapOwned && colorNear(pill, want.title) && colorNear(gap, want.body) && aggFlat.painted(), d);
+    }
+    aggFlat.Destroy();
+
+    Box box;
+    BoxConfig cfg;
+    cfg.name = L"子目录盒";
+    cfg.rect = RECT{40, 460, 40 + 380, 460 + 260};
+    add("sub_box_created", box.Create(cfg, root));
+    PumpMessages(300);
+
+    add("sub_lists_this_level_then_dirs", [&] {
+        auto s = box.SubNames();
+        return s.size() == 3 && s[0] == L"本层" && s[1] == L"2024" && s[2] == L"报告";
+    }(), [&] {
+        std::string out;
+        for (const auto& n : box.SubNames()) {
+            out += WideToUtf8(n);
+            out += "|";
+        }
+        return out;
+    }());
+    add("sub_root_shows_root_items", box.itemCount() == 4 && box.ActiveSub().empty(),
+        "items=" + std::to_string(box.itemCount()));
+
+    const int areaOneRow = box.tabAreaHeight();
+    box.SetGrouped(true);
+    PumpMessages(200);
+    add("sub_area_grows_with_first_row", box.tabAreaHeight() > areaOneRow,
+        "one=" + std::to_string(areaOneRow) + " two=" + std::to_string(box.tabAreaHeight()));
+
+    // 下面这些断言一律先把会改状态的调用执行完、再取细节：add(name, Toggle(...),
+    // DetailOf(被 Toggle 改过的东西)) 里参数求值顺序不定，细节常常是上一步的，
+    // 断言对了而证据是错的，失败时反而把人带偏。
+    const bool wentDeep = box.SetSubTab(L"2024");
+    const size_t deepItems = box.itemCount();
+    add("sub_switch_shows_that_folder",
+        wentDeep && box.ActiveSub() == L"2024" && box.displayFolder() == deep && deepItems == 4,
+        "items=" + std::to_string(deepItems));
+    add("sub_two_levels_only", [&] {
+        auto s = box.SubNames();
+        return s.size() == 3 && s[1] == L"2024" && s[2] == L"报告";
+    }(), "进到 2024 以后第二排还是那三张，不往里列");
+    // 第一排的分类是按当前显示的那一层算的：进到 2024 之后文档类应该是三个文件。
+    const bool wentDocs = box.SetCategoryTab(L"文档");
+    const size_t docsShown = box.shownCount();
+    add("sub_and_category_combined", wentDocs && docsShown == 3 && box.ActiveSub() == L"2024",
+        "shown=" + std::to_string(docsShown));
+    box.SetCategoryTab(L"全部");
+
+    // 拖进来的东西落在正在看的那一层，撤销记录里也要带上这一层，不然人看不出东西去哪了。
+    const std::wstring srcDir = AppFile(L"sub_src");
+    EnsureDirExists(srcDir);
+    const std::wstring dropMe = JoinPath(srcDir, L"待归.txt");
+    TouchFile(dropMe, "8");
+    bool dropped = box.AcceptFiles(std::vector<std::wstring>{dropMe});
+    const bool landedDeep = PathExists(JoinPath(deep, L"待归.txt"));
+    const bool goneFromSrc = !PathExists(dropMe);
+    std::wstring lastLabel;
+    UndoHistoryLastLabel(lastLabel);
+    add("sub_drop_lands_on_shown_folder", dropped && landedDeep && goneFromSrc,
+        "in2024=" + std::to_string(landedDeep ? 1 : 0) + " srcLeft=" + std::to_string(PathExists(dropMe) ? 1 : 0));
+    add("sub_undo_label_names_the_level", lastLabel.find(L"/2024") != std::wstring::npos, WideToUtf8(lastLabel));
+
+    const bool wentBack = box.SetSubTab(L"本层");
+    add("sub_back_to_this_level",
+        wentBack && box.ActiveSub().empty() && box.displayFolder() == root, WideToUtf8(box.ActiveSub()));
+    const bool refusedUnknown = !box.SetSubTab(L"没有这个子目录");
+    add("sub_rejects_unknown_name", refusedUnknown);
+
+    // 标签卡必须真的画出来，光几何算得对掩盖不了没绘制那类问题。
+    // 采样点要落在「当前选中的那一张」上：选中本层，圆角块就在第一张的位置上。
+    box.SetSubTab(L"本层");
+    box.SetAlpha(255);
+    PumpMessages(350);
+    {
+        RECT br{};
+        GetWindowRect(box.hwnd(), &br);
+        // 第一排占 y 34..60，第二排在它下面 68..94（100% DPI）。选中的「本层」是第二排
+        // 第一张，x 10..86：文字从 34 开始，所以取 x=22 拿纯选中色，再取两张之间
+        // 那 4 像素的缝（x=88）当盒子底色对照。
+        const POINT pillPt{br.left + 22, br.top + 78};
+        const POINT gapPt{br.left + 88, br.top + 78};
+        bool pillOwned = WindowFromPoint(pillPt) == box.hwnd();
+        bool gapOwned = WindowFromPoint(gapPt) == box.hwnd();
+        HDC screen = GetDC(nullptr);
+        COLORREF pill = GetPixel(screen, pillPt.x, pillPt.y);
+        COLORREF gap = GetPixel(screen, gapPt.x, gapPt.y);
+        ReleaseDC(nullptr, screen);
+        const Palette want = ThemeCurrent();
+        auto colorNear = [](COLORREF got, unsigned rgb) {
+            return abs(GetRValue(got) - (int)((rgb >> 16) & 0xFF)) <= 8 &&
+                   abs(GetGValue(got) - (int)((rgb >> 8) & 0xFF)) <= 8 &&
+                   abs(GetBValue(got) - (int)(rgb & 0xFF)) <= 8;
+        };
+        const bool pillIsTitle = colorNear(pill, want.title);
+        const bool gapIsBody = colorNear(gap, want.body);
+        char d[160];
+        snprintf(d, sizeof d, "pill=(%d,%d,%d) want=(%d,%d,%d) gap=(%d,%d,%d) body=(%d,%d,%d) owned=%d/%d painted=%d",
+                 GetRValue(pill), GetGValue(pill), GetBValue(pill), (want.title >> 16) & 0xFF, (want.title >> 8) & 0xFF,
+                 want.title & 0xFF, GetRValue(gap), GetGValue(gap), GetBValue(gap), want.body >> 16,
+                 (want.body >> 8) & 0xFF, want.body & 0xFF, pillOwned ? 1 : 0, gapOwned ? 1 : 0,
+                 box.painted() ? 1 : 0);
+        add("sub_tab_actually_painted", pillOwned && gapOwned && pillIsTitle && gapIsBody && box.painted(), d);
+    }
+    box.Destroy();
+
+    // 配置里带着 sub 启动：存在就显示那一层，不存在就退回本层。
+    Box startDeep;
+    BoxConfig deepCfg;
+    deepCfg.name = L"子目录盒";
+    deepCfg.rect = RECT{40, 460, 40 + 380, 460 + 260};
+    deepCfg.sub = L"报告";
+    const bool madeDeep = startDeep.Create(deepCfg, root);
+    const size_t savedLevelItems = startDeep.itemCount();
+    add("sub_starts_on_saved_level",
+        madeDeep && startDeep.ActiveSub() == L"报告" && savedLevelItems == 1,
+        "items=" + std::to_string(savedLevelItems));
+    startDeep.Destroy();
+
+    Box stale;
+    BoxConfig staleCfg;
+    staleCfg.name = L"子目录盒";
+    staleCfg.rect = RECT{40, 460, 40 + 380, 460 + 260};
+    staleCfg.sub = L"已经删掉的";
+    const bool madeStale = stale.Create(staleCfg, root);
+    const size_t fellBackItems = stale.itemCount();
+    add("sub_stale_config_falls_back",
+        madeStale && stale.ActiveSub().empty() && fellBackItems == 4,
+        "sub=" + WideToUtf8(stale.ActiveSub()) + " items=" + std::to_string(fellBackItems));
+    // 看着子目录的时候它被从别处删掉了，心跳刷新要能兜回来。
+    stale.SetSubTab(L"报告");
+    RemoveDirIfExists(other);
+    stale.RefreshContent();
+    add("sub_deleted_while_shown_falls_back", stale.ActiveSub().empty() && stale.displayFolder() == root);
+    EnsureDirExists(other);
+    TouchFile(JoinPath(other, L"f.log"), "6");
+    stale.Destroy();
+
+    // 切成员等于换目录，第二层要跟着清掉。
+    Box agg;
+    BoxConfig aggCfg;
+    aggCfg.name = L"子合集";
+    aggCfg.rect = RECT{40, 460, 40 + 380, 460 + 260};
+    aggCfg.members = L"根,报告盒";
+    add("sub_aggregate_created", agg.Create(aggCfg, root, {{L"根", root}, {L"报告盒", other}}));
+    PumpMessages(300);
+    agg.SetSubTab(L"2024");
+    add("sub_aggregate_level_applies", agg.ActiveSub() == L"2024" && agg.displayFolder() == deep,
+        WideToUtf8(agg.displayFolder()));
+    agg.SetCategoryTab(L"报告盒");
+    const size_t afterMemberSwitch = agg.itemCount();
+    add("sub_cleared_on_member_switch",
+        agg.ActiveSub().empty() && agg.displayFolder() == other && afterMemberSwitch == 1,
+        "items=" + std::to_string(afterMemberSwitch));
+    agg.Destroy();
+
+    // 「全部」手写在配置里和留空是一个意思。
+    Box allBox;
+    BoxConfig allCfg;
+    allCfg.name = L"全部盒";
+    allCfg.rect = RECT{40, 460, 40 + 380, 460 + 260};
+    allCfg.grouped = true;
+    allCfg.tab = L"全部";
+    const bool madeAll = allBox.Create(allCfg, root);
+    const size_t allShown = allBox.shownCount();
+    const size_t allTotal = allBox.itemCount();
+    add("sub_all_tab_alias_is_empty",
+        madeAll && allBox.ActiveTab().empty() && allShown == allTotal,
+        "tab=" + WideToUtf8(allBox.ActiveTab()) + " shown=" + std::to_string(allShown) +
+            " total=" + std::to_string(allTotal));
+    allBox.Destroy();
+
+    // 配置往返
+    Layout lay{};
+    BoxConfig b;
+    b.name = L"子目录盒";
+    b.rect = RECT{10, 10, 10 + 360, 10 + 260};
+    b.sub = L"2024";
+    lay.boxes.push_back(b);
+    const std::wstring iniFile = AppFile(L"sub_roundtrip.ini");
+    bool sv = LayoutSaveTo(lay, iniFile);
+    Layout back{};
+    bool ld = LayoutLoadFrom(back, iniFile);
+    add("sub_config_roundtrip", sv && ld && back.boxes.size() == 1 && back.boxes[0].sub == L"2024",
+        WideToUtf8(ld && !back.boxes.empty() ? back.boxes[0].sub : L"<load failed>"));
+    DeleteFileW(iniFile.c_str());
+
+    for (const auto& d : {root, other, flat, srcDir}) RemoveDirIfExists(d);
+    DeleteFileW(dropMe.c_str());
+}
+
 void AddThemeChecks(std::vector<Check>& checks, HINSTANCE hi) {
     auto add = [&](const char* n, bool ok, std::string detail = {}) {
         checks.push_back(Check{n, ok, std::move(detail)});
@@ -2515,10 +2790,12 @@ void App::ShowMergeMenu(const std::wstring& boxName, POINT screenPt) {
     }
     if (!tray_ || !boxHwnd || boxName.empty()) return;
 
-    HMENU menu = CreatePopupMenu();
-    if (!menu) return;
-    AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, L"勾选即合并，再点一次移出");
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    // 说明行也是一条 owner-draw 项，需要一个点不中的 id：id 为 0 会被当成分隔项，
+    // 量不出尺寸也画不出来。给个高位 id，加上灰掉，双保险。
+    static constexpr int kMergeNote = 0x7FFF0001;
+    IconMenu menu;
+    menu.Add(kMergeNote, Glyph::None, L"勾选即合并，再点一次移出", false);
+    menu.Separator();
 
     UINT idBase = 1;
     std::vector<std::wstring> targets;
@@ -2527,23 +2804,17 @@ void App::ShowMergeMenu(const std::wstring& boxName, POINT screenPt) {
         const bool member = IsMergeMember(layout_, boxName, c.name);
         // 已经是标签盒的不能当成员，否则会出现套了两层的标签卡。
         const bool nested = IsAggregate(layout_, c.name);
-        UINT flags = MF_STRING;
-        if (member) flags |= MF_CHECKED;
-        if (nested) flags |= MF_GRAYED;
         std::wstring label = c.name;
         if (nested) label += L"（已是标签盒）";
-        AppendMenuW(menu, flags, idBase, label.c_str());
+        menu.Add(static_cast<int>(idBase), Glyph::BoxItem, label, !nested, member);
         targets.push_back(c.name);
         idBase++;
     }
     if (targets.empty()) {
-        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, L"没有可以合并的盒子");
+        menu.Add(static_cast<int>(idBase), Glyph::None, L"没有可以合并的盒子", false);
     }
 
-    SetForegroundWindow(tray_);
-    const int picked = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_NONOTIFY | TPM_RETURNCMD, screenPt.x, screenPt.y, 0,
-                                      tray_, nullptr);
-    DestroyMenu(menu);
+    const int picked = menu.Track(tray_, screenPt);
     if (picked < 1 || static_cast<size_t>(picked) > targets.size()) return;
 
     const std::wstring memberName = targets[static_cast<size_t>(picked) - 1];
@@ -2678,6 +2949,119 @@ bool App::RefreshTrayIcon() {
     icon_ = next;
     iconOwned_ = nextOwned;
     return true;
+}
+
+// 菜单小图形的自检。图形全部是现画的，所以这里只盯三件事：每个图形都真的画了东西、
+// 用到的颜色就是当前配色的文字色（深浅色要一起变）、以及两个图形不能长得一样
+// —— 两条菜单项撞图等于没有图。
+void AddGlyphChecks(std::vector<Check>& checks) {
+    auto add = [&](const char* n, bool ok, std::string detail = {}) {
+        checks.push_back(Check{n, ok, std::move(detail)});
+    };
+
+    const Glyph all[] = {
+        Glyph::NewBox,      Glyph::ShowBoxes, Glyph::HideBoxes, Glyph::SaveNow,   Glyph::ShowIcons,
+        Glyph::HideIcons,   Glyph::Undo,      Glyph::RunRules,  Glyph::SweepRules, Glyph::Backup,
+        Glyph::Restore,     Glyph::ShellMenuOn, Glyph::ShellMenuOff, Glyph::Quit, Glyph::Collapse,
+        Glyph::Expand,      Glyph::Rename,    Glyph::Merge,     Glyph::OpenFolder, Glyph::Category,
+        Glyph::Ungroup,     Glyph::Delete,    Glyph::BoxItem,
+    };
+    constexpr unsigned kInk = 0x00E0D0C0u;
+
+    bool everyOneDraws = true;
+    std::string emptyOnes;
+    std::vector<std::string> signatures;
+    bool allInkColored = true;
+    std::string wrongColor;
+    for (Glyph g : all) {
+        std::vector<uint32_t> px;
+        BuildGlyphPixels(g, 16, kInk, px);
+        unsigned inkCount = 0;
+        for (size_t i = 0; i < px.size(); ++i) {
+            if (px[i] == 0u) continue;
+            inkCount++;
+            if (px[i] != (0xFF000000u | kInk)) {
+                allInkColored = false;
+                char b[64];
+                snprintf(b, sizeof b, "glyph %d px %zu = %08X", static_cast<int>(g), i, px[i]);
+                wrongColor = b;
+            }
+        }
+        if (inkCount < 12) {
+            everyOneDraws = false;
+            emptyOnes += std::to_string(static_cast<int>(g)) + "(" + std::to_string(inkCount) + ") ";
+        }
+        signatures.push_back(std::string(reinterpret_cast<const char*>(px.data()), px.size() * sizeof(uint32_t)));
+    }
+    add("glyph_every_shape_draws", everyOneDraws, emptyOnes);
+    add("glyph_uses_the_given_ink", allInkColored, wrongColor);
+
+    std::string clashes;
+    for (size_t a = 0; a < signatures.size(); ++a) {
+        for (size_t b = a + 1; b < signatures.size(); ++b) {
+            if (signatures[a] == signatures[b]) {
+                clashes += std::to_string(static_cast<int>(all[a])) + "==" +
+                           std::to_string(static_cast<int>(all[b])) + " ";
+            }
+        }
+    }
+    add("glyph_shapes_are_distinct", clashes.empty(), clashes);
+
+    std::vector<uint32_t> none;
+    BuildGlyphPixels(Glyph::None, 16, kInk, none);
+    bool noneEmpty = true;
+    for (auto v : none) {
+        if (v != 0u) noneEmpty = false;
+    }
+    add("glyph_none_is_blank", noneEmpty);
+
+    // 16 格放大到 32 应该大约是四倍像素，说明形状是随尺寸缩放的，不是只画在 16px 上。
+    std::vector<uint32_t> smallPx, bigPx;
+    BuildGlyphPixels(Glyph::NewBox, 16, kInk, smallPx);
+    BuildGlyphPixels(Glyph::NewBox, 32, kInk, bigPx);
+    size_t smallInk = 0, bigInk = 0;
+    for (auto v : smallPx) {
+        if (v) smallInk++;
+    }
+    for (auto v : bigPx) {
+        if (v) bigInk++;
+    }
+    add("glyph_scales_with_size", smallInk > 0 && bigInk >= smallInk * 3 && bigInk <= smallInk * 5,
+        "16=" + std::to_string(smallInk) + " 32=" + std::to_string(bigInk));
+
+    // 真正画到 DC 上的那条路也要验：菜单用的就是 SetPixelV。
+    {
+        BITMAPINFO bi{};
+        bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+        bi.bmiHeader.biWidth = 16;
+        bi.bmiHeader.biHeight = -16;
+        bi.bmiHeader.biPlanes = 1;
+        bi.bmiHeader.biBitCount = 32;
+        bi.bmiHeader.biCompression = BI_RGB;
+        void* bits = nullptr;
+        HBITMAP bmp = CreateDIBSection(nullptr, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+        HDC mem = bmp ? CreateCompatibleDC(nullptr) : nullptr;
+        HGDIOBJ oldBmp = mem ? SelectObject(mem, bmp) : nullptr;
+        bool drew = false;
+        if (mem && bits) {
+            auto* px = static_cast<uint32_t*>(bits);
+            for (int i = 0; i < 16 * 16; ++i) px[i] = 0xFF102030u;  // 先铺一个已知背景
+            PaintGlyphOnHdc(mem, Glyph::Undo, 0x00ABCDEFu, 0, 0, 16);
+            // 32 位 DIB 的字节序是 B,G,R,A，按小端读成一个 uint32 就是 0xAARRGGBB，
+            // 所以读回来的正好是我传进去的那个 0x00RRGGBB（alpha 位 SetPixelV 不动）。
+            const uint32_t want = 0x00ABCDEFu;
+            unsigned ink = 0, untouched = 0;
+            for (int i = 0; i < 16 * 16; ++i) {
+                if (px[i] == 0xFF102030u) untouched++;
+                else if ((px[i] & 0x00FFFFFFu) == want) ink++;
+            }
+            drew = ink > 12 && untouched > 120;  // 画到了该画的地方，也把没画的地方留着
+        }
+        if (oldBmp && mem) SelectObject(mem, oldBmp);
+        if (mem) DeleteDC(mem);
+        if (bmp) DeleteObject(bmp);
+        add("glyph_paints_onto_a_dc", drew);
+    }
 }
 
 void AddIconChecks(std::vector<Check>& checks) {

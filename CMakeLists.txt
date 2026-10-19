@@ -6,7 +6,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # 发布版本号的唯一来源，格式 a.b.c。src\app.rc 用它生成 exe 的版本资源，
 # scripts\package.cmd 从构建目录里的 version.txt 读同一个值来命名发布产物。
-set(DESKORG_VERSION "1.1.0" CACHE STRING "发布版本号 a.b.c")
+# 这里故意不用 CACHE：cache 会记住上一次配置时的值，改了这一行也会被旧值盖掉，
+# 出现"版本号改了、包名还是上一个"这种事。
+set(DESKORG_VERSION "1.2.0")
 string(REPLACE "." ";" DESKORG_VERSION_PARTS "${DESKORG_VERSION}")
 list(LENGTH DESKORG_VERSION_PARTS DESKORG_VERSION_PARTS_COUNT)
 if(NOT DESKORG_VERSION_PARTS_COUNT EQUAL 3)
@@ -45,6 +47,8 @@ add_executable(DeskOrganization WIN32
   src/content.cpp
   src/theme.cpp
   src/iconres.cpp
+  src/glyphs.cpp
+  src/menuicons.cpp
   src/desklayout.cpp
   src/iconview.cpp
   src/droptarget.cpp
