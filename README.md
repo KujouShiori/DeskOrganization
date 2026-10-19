@@ -11,6 +11,10 @@ Windows 11 桌面整理工具。桌面上开一块块盒子，文件拖进去就
 
 产物在 out\build\DeskOrganization.exe。清理后重新配置用 scripts\build.cmd clean。
 
+发布用的产物用 scripts\package.cmd：先按 Release 配置编译（开优化，C 运行库静态链接进 exe，
+所以免安装版在没有装 VC++ 运行库的机器上也能直接双击），再压出免安装 zip、编出安装包，
+两者都放在 out\dist\。安装包需要另外安装 Inno Setup 6，脚本按默认路径调用它。
+发布版本号只在 scripts\package.cmd 开头写一次，文件名和安装包里的版本都取自那里。
 
 ## 使用
 
