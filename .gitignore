@@ -1,0 +1,11 @@
+build/
+out/
+*.obj
+*.exe
+*.ilk
+*.pdb
+
+selftest.txt
+layouttest.txt
+probe_*.txt
+_install_vs.log
