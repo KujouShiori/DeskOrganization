@@ -10,12 +10,14 @@ add_executable(DeskOrganization WIN32
   src/layout.cpp
   src/render.cpp
   src/rename.cpp
+  src/merge.cpp
   src/geometry.cpp
   src/shellmenu.cpp
   src/box.cpp
   src/category.cpp
   src/content.cpp
   src/theme.cpp
+  src/iconres.cpp
   src/desklayout.cpp
   src/iconview.cpp
   src/droptarget.cpp

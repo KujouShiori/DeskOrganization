@@ -40,8 +40,11 @@ class App {
     void ApplyMembershipVisibility();
     // 改分辨率或拔掉显示器后，把落到屏幕外的盒子拉回来。
     void ClampBoxesToScreens(const wchar_t* reason);
+    // 按盒子名而不是窗口句柄定位：切换成员会重建盒子，句柄每次都变。
+    void ShowMergeMenu(const std::wstring& boxName, POINT screenPt);
     std::wstring FolderForBoxName(const std::wstring& name) const;
     void ShowBalloon(const std::wstring& title, const std::wstring& text);
+    bool RefreshTrayIcon();
     void RemoveTray();
     void ShowTrayMenu(POINT screenPt);
     void OnCommand(int id);
@@ -56,6 +59,7 @@ class App {
 
     HWND tray_ = nullptr;
     HICON icon_ = nullptr;
+    bool iconOwned_ = false;   // 自己生成的图标要 DestroyIcon，系统共享的不能
     HWND progman_ = nullptr;
     HWND defView_ = nullptr;
     std::vector<std::unique_ptr<Box>> boxes_;

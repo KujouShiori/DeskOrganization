@@ -10,3 +10,4 @@
 HWND TheTrayWnd();
 #define WM_APP_UNDO_NOW     (WM_APP + 5)
 #define WM_APP_RENAME_BOX   (WM_APP + 6)
+#define WM_APP_MERGE_MENU     (WM_APP + 7)

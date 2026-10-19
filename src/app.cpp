@@ -3,14 +3,17 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <windowsx.h>
 
 #include <dwmapi.h>
 
 #include "desklayout.h"
 #include "fileop.h"
 #include "geometry.h"
-#include "iconview.h"
 #include "iconlayer.h"
+#include "iconres.h"
+#include "iconview.h"
+#include "merge.h"
 #include "organize.h"
 #include "rename.h"
 #include "render.h"
@@ -136,6 +139,11 @@ void App::Shutdown() {
     if (timer_) KillTimer(tray_, kHeartbeat);
     timer_ = 0;
     RemoveTray();
+    if (iconOwned_ && icon_) {
+        DestroyIcon(icon_);
+        icon_ = nullptr;
+        iconOwned_ = false;
+    }
     for (auto& b : boxes_) b->Destroy();
     boxes_.clear();
     SyncLayoutFromBoxes();
@@ -260,6 +268,8 @@ void App::AddTray() {
     nid.hIcon = icon_;
     lstrcpynW(nid.szTip, L"桌面整理 DeskOrganization", _countof(nid.szTip));
     if (!Shell_NotifyIconW(NIM_ADD, &nid)) Log(L"托盘图标添加失败 gle=%lu", GetLastError());
+    // 上面那份是兜底图标；能自己画就换成按当前配色生成的那一个。
+    if (!RefreshTrayIcon()) Log(L"托盘图标未能换成自绘图标，继续使用系统默认图标");
 }
 
 void App::RemoveTray() {
@@ -408,6 +418,19 @@ LRESULT CALLBACK App::WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             self->SyncLayoutFromBoxes();
             LayoutSave(self->layout_);
             return 0;
+        case WM_APP_MERGE_MENU: {
+            // 只传句柄和锚点：名字在这里查得到，不必让一个堆对象跨消息活着。
+            HWND which = reinterpret_cast<HWND>(wp);
+            POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            for (auto& b : self->boxes_) {
+                if (b->hwnd() != which) continue;
+                BoxConfig c;
+                b->Current(c);
+                self->ShowMergeMenu(c.name, pt);
+                break;
+            }
+            return 0;
+        }
         case WM_APP_RENAME_BOX: {
             HWND which = reinterpret_cast<HWND>(wp);
             for (auto& b : self->boxes_) {
@@ -438,6 +461,12 @@ LRESULT CALLBACK App::WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_APP_BOX_DELETE:
             self->DeleteBoxByHwnd(reinterpret_cast<HWND>(wp));
             return 0;
+        case WM_SETTINGCHANGE: {
+            // 深浅色切换也是这条广播，托盘图标跟着换一次配色。
+            auto* area = reinterpret_cast<const wchar_t*>(lp);
+            if (area && _wcsicmp(area, L"ImmersiveColorSet") == 0) self->RefreshTrayIcon();
+            return 0;
+        }
         case WM_TIMER:
             if (wp == kHeartbeat) self->OnHeartbeat();
             return 0;
@@ -566,6 +595,8 @@ void AddHoldChecks(std::vector<Check>& checks);
 void AddRenameChecks(std::vector<Check>& checks);
 void AddInlineRenameChecks(std::vector<Check>& checks, HINSTANCE hi);
 void AddGeometryChecks(std::vector<Check>& checks);
+void AddMergeChecks(std::vector<Check>& checks);
+void AddIconChecks(std::vector<Check>& checks);
 
 int AppSelfTest() {
     std::vector<Check> checks;
@@ -991,6 +1022,8 @@ int AppSelfTest() {
     AddRenameChecks(checks);
     AddInlineRenameChecks(checks, hi);
     AddGeometryChecks(checks);
+    AddMergeChecks(checks);
+    AddIconChecks(checks);
 
     // 图形设备必须在上面这些检查之后释放：它们里面还会创建盒子窗口并真的绘制，
     // 提前释放会让 Paint 拿不到 render target，表现为盒子一片空白。
@@ -2464,4 +2497,237 @@ void AddGeometryChecks(std::vector<Check>& checks) {
         if (r.right <= r.left || r.bottom <= r.top) allSane = false;
     }
     add("clamp_real_monitors_sane", allSane);
+}
+
+// 切换成员：先在副本上做，成功才换正本并重建，失败时界面上的盒子完全不动。
+void App::ShowMergeMenu(const std::wstring& boxName, POINT screenPt) {
+    HWND boxHwnd = nullptr;
+    for (auto& b : boxes_) {
+        BoxConfig c;
+        b->Current(c);
+        if (c.name == boxName) {
+            boxHwnd = b->hwnd();
+            break;
+        }
+    }
+    if (!tray_ || !boxHwnd || boxName.empty()) return;
+
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+    AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, L"勾选即合并，再点一次移出");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+
+    UINT idBase = 1;
+    std::vector<std::wstring> targets;
+    for (const auto& c : layout_.boxes) {
+        if (_wcsicmp(c.name.c_str(), boxName.c_str()) == 0) continue;
+        const bool member = IsMergeMember(layout_, boxName, c.name);
+        // 已经是标签盒的不能当成员，否则会出现套了两层的标签卡。
+        const bool nested = IsAggregate(layout_, c.name);
+        UINT flags = MF_STRING;
+        if (member) flags |= MF_CHECKED;
+        if (nested) flags |= MF_GRAYED;
+        std::wstring label = c.name;
+        if (nested) label += L"（已是标签盒）";
+        AppendMenuW(menu, flags, idBase, label.c_str());
+        targets.push_back(c.name);
+        idBase++;
+    }
+    if (targets.empty()) {
+        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, L"没有可以合并的盒子");
+    }
+
+    SetForegroundWindow(tray_);
+    const int picked = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_NONOTIFY | TPM_RETURNCMD, screenPt.x, screenPt.y, 0,
+                                      tray_, nullptr);
+    DestroyMenu(menu);
+    if (picked < 1 || static_cast<size_t>(picked) > targets.size()) return;
+
+    const std::wstring memberName = targets[static_cast<size_t>(picked) - 1];
+    Layout trial = layout_;
+    std::wstring err;
+    if (!ToggleMergeMember(trial, boxName, memberName, err)) {
+        Log(L"合并操作被拒绝：%s", err.c_str());
+        ShowBalloon(L"合并未执行", err);
+        return;
+    }
+    layout_ = trial;
+    RebuildBoxes();
+    SyncLayoutFromBoxes();
+    LayoutSave(layout_);
+    Log(L"合并关系已更新：%s 与 %s", boxName.c_str(), memberName.c_str());
+    // 重新弹出来，让一次操作里可以连续勾好几个盒子。
+    ShowMergeMenu(boxName, screenPt);
+}
+
+// 这里所有断言都遵守同一个写法：先把会改动状态的调用单独执行完，再拿结果和细节去 add。
+// 写成 add(name, Toggle(...), DetailOf(被 Toggle 改过的东西)) 时，C++ 不保证参数求值顺序，
+// detail 常常在 Toggle 之前就算好了，于是断言是对的、给出来的理由却是上一步的，
+// 真失败时会把人往错的方向带。这个坑我已经踩过两次，不能再写第三遍。
+void AddMergeChecks(std::vector<Check>& checks) {
+    auto add = [&](const char* n, bool ok, std::string detail = {}) {
+        checks.push_back(Check{n, ok, std::move(detail)});
+    };
+
+    auto makeLayout = [](void) {
+        Layout l{};
+        const wchar_t* names[] = {L"合集", L"图片", L"文档", L"其他"};
+        for (int i = 0; i < 4; ++i) {
+            BoxConfig b;
+            b.name = names[i];
+            b.rect = RECT{0, 0, 320, 240};
+            l.boxes.push_back(b);
+        }
+        return l;
+    };
+
+    std::wstring err;
+    bool ok = false;
+
+    Layout lay = makeLayout();
+    add("merge_starts_plain", !IsAggregate(lay, L"合集") && !IsMergeMember(lay, L"合集", L"图片"));
+
+    ok = ToggleMergeMember(lay, L"合集", L"图片", err);
+    add("merge_toggle_on", ok && lay.boxes[0].members == L"图片", WideToUtf8(lay.boxes[0].members));
+
+    ok = ToggleMergeMember(lay, L"合集", L"文档", err);
+    add("merge_toggle_second", ok && lay.boxes[0].members == L"图片,文档", WideToUtf8(lay.boxes[0].members));
+
+    add("merge_reports_aggregate", IsAggregate(lay, L"合集") && IsMergeMember(lay, L"合集", L"文档"));
+    add("merge_member_query_true", IsMergeMember(lay, L"合集", L"图片"));
+    add("merge_member_query_false", !IsMergeMember(lay, L"合集", L"其他"));
+
+    Layout off = lay;
+    ok = ToggleMergeMember(off, L"合集", L"图片", err);
+    add("merge_toggle_off", ok && off.boxes[0].members == L"文档", WideToUtf8(off.boxes[0].members));
+
+    const std::wstring beforeSelfMerge = lay.boxes[0].members;
+    Layout r1 = lay;
+    err.clear();
+    ok = ToggleMergeMember(r1, L"合集", L"合集", err);
+    add("merge_rejects_self", !ok && r1.boxes[0].members == beforeSelfMerge, WideToUtf8(err));
+
+    Layout r2 = lay;
+    err.clear();
+    ok = ToggleMergeMember(r2, L"合集", L"没这个盒子", err);
+    add("merge_rejects_unknown", !ok && r2.boxes[0].members == beforeSelfMerge, WideToUtf8(err));
+
+    Layout nested = makeLayout();
+    ToggleMergeMember(nested, L"图片", L"文档", err);
+    Layout nestedTry = nested;
+    err.clear();
+    ok = ToggleMergeMember(nestedTry, L"合集", L"图片", err);
+    add("merge_rejects_nested_aggregate", !ok && nestedTry.boxes[0].members.empty(), WideToUtf8(err));
+
+    Layout cycle = makeLayout();
+    ToggleMergeMember(cycle, L"合集", L"图片", err);
+    Layout cycleTry = cycle;
+    err.clear();
+    ok = ToggleMergeMember(cycleTry, L"图片", L"合集", err);
+    // 双向合并由"成员不能是标签盒"这条挡住，不存在单独的成环路径。
+    add("merge_rejects_two_way", !ok && cycleTry.boxes[1].members.empty() && err.find(L"标签盒") != std::wstring::npos,
+        WideToUtf8(err));
+
+    Layout g = makeLayout();
+    g.boxes[0].grouped = true;
+    ok = ToggleMergeMember(g, L"合集", L"图片", err);
+    add("merge_disables_grouping", ok && !g.boxes[0].grouped);
+
+    Layout t = makeLayout();
+    ToggleMergeMember(t, L"合集", L"图片", err);
+    ToggleMergeMember(t, L"合集", L"文档", err);
+    t.boxes[0].tab = L"文档";
+    ToggleMergeMember(t, L"合集", L"文档", err);
+    add("merge_clears_stale_tab", t.boxes[0].tab.empty(), WideToUtf8(t.boxes[0].tab));
+
+    Layout t2 = makeLayout();
+    ToggleMergeMember(t2, L"合集", L"图片", err);
+    t2.boxes[0].tab = L"图片";
+    ToggleMergeMember(t2, L"合集", L"图片", err);
+    add("merge_clears_tab_when_emptied", t2.boxes[0].members.empty() && t2.boxes[0].tab.empty());
+}
+
+// 生成并换上当前配色的托盘图标。返回 false 表示连生成都失败、只能继续用兜底图标。
+bool App::RefreshTrayIcon() {
+    const int size = GetSystemMetrics(SM_CXSMICON);
+    HICON made = CreateBoxIcon(ThemeCurrent(), size > 1 ? size : 16);
+    HICON next = made;
+    bool nextOwned = made != nullptr;
+    if (!next) {
+        next = LoadIconW(nullptr, IDI_APPLICATION);
+        nextOwned = false;
+    }
+    if (!next) return false;
+
+    NOTIFYICONDATAW nid{};
+    nid.cbSize = sizeof nid;
+    nid.hWnd = tray_;
+    nid.uID = kTrayId;
+    nid.uFlags = NIF_ICON;
+    nid.hIcon = next;
+    if (!Shell_NotifyIconW(NIM_MODIFY, &nid)) {
+        if (nextOwned) DestroyIcon(next);
+        return false;
+    }
+
+    // 先换成功再销毁旧的，避免中途把正在用的图标销毁掉。
+    if (iconOwned_ && icon_ && icon_ != next) DestroyIcon(icon_);
+    icon_ = next;
+    iconOwned_ = nextOwned;
+    return true;
+}
+
+void AddIconChecks(std::vector<Check>& checks) {
+    auto add = [&](const char* n, bool ok, std::string detail = {}) {
+        checks.push_back(Check{n, ok, std::move(detail)});
+    };
+
+    const Palette p = DarkPalette();
+    const int size = 32;
+    std::vector<uint32_t> argb;
+    std::vector<uint8_t> mask;
+    BuildBoxIconPixels(p, size, argb, mask);
+    add("icon_pixels_sized", argb.size() == static_cast<size_t>(size) * static_cast<size_t>(size),
+        "n=" + std::to_string(argb.size()));
+
+    auto px = [&](int x, int y) { return argb[static_cast<size_t>(y) * static_cast<size_t>(size) + static_cast<size_t>(x)]; };
+    auto transparentAt = [&](int x, int y) {
+        const size_t stride = (static_cast<size_t>(size) + 7) / 8;
+        return (mask[static_cast<size_t>(y) * stride + static_cast<size_t>(x / 8)] >> (7 - (x % 8))) & 1u;
+    };
+    const uint32_t expectBody = (255u << 24) | ((p.body >> 16) << 16) | ((p.body >> 8) << 8) | (p.body & 0xFFu);
+    const uint32_t center = px(size / 2, size - 3);
+    add("icon_body_pixel", center == expectBody,
+        "got=" + std::to_string(center) + " want=" + std::to_string(expectBody));
+    add("icon_corner_transparent", transparentAt(0, 0) && !transparentAt(size / 2, size - 2),
+        "corner=" + std::to_string(transparentAt(0, 0)) + " bottommid=" + std::to_string(transparentAt(size / 2, size - 2)));
+    add("icon_title_band_differs", px(size / 2, 2) != expectBody && px(size / 2, 2) != 0u,
+        "band=" + std::to_string(px(size / 2, 2)));
+    add("icon_uses_both_palettes", DarkPalette().body != LightPalette().body);
+
+    std::vector<uint32_t> lightArgb;
+    std::vector<uint8_t> lightMask;
+    BuildBoxIconPixels(LightPalette(), size, lightArgb, lightMask);
+    add("icon_light_differs_from_dark", lightArgb != argb);
+
+    HICON icon = CreateBoxIcon(p, size);
+    add("icon_handle_created", icon != nullptr);
+    if (icon) {
+        ICONINFO info = {};
+        bool got = GetIconInfo(icon, &info) != FALSE;
+        int w = 0, h = 0;
+        if (got && info.hbmColor) {
+            BITMAP bm = {};
+            if (GetObjectW(info.hbmColor, sizeof bm, &bm)) {
+                w = bm.bmWidth;
+                h = bm.bmHeight;
+            }
+        }
+        add("icon_dimensions", got && w == size && h == size, "w=" + std::to_string(w) + " h=" + std::to_string(h));
+        if (info.hbmColor) DeleteObject(info.hbmColor);
+        if (info.hbmMask) DeleteObject(info.hbmMask);
+        DestroyIcon(icon);
+    }
+    // 尺寸非法时不能崩，也不能返回一个用不了的句柄。
+    add("icon_rejects_bad_size", CreateBoxIcon(p, 0) == nullptr && CreateBoxIcon(p, 1) == nullptr);
 }

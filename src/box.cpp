@@ -15,6 +15,7 @@ static constexpr int kCmdDelete = 2;
 static constexpr int kCmdUndo = 3;
 static constexpr int kCmdOpenFolder = 4;
 static constexpr int kCmdRename = 6;
+static constexpr int kCmdMerge = 7;
 static constexpr int kCmdGroup = 5;
 
 bool Box::Register(HINSTANCE instance) {
@@ -506,6 +507,7 @@ void Box::ShowContextMenu(POINT screenPt) {
     if (!menu) return;
     AppendMenuW(menu, MF_STRING, kCmdCollapse, cfg_.collapsed ? L"展开盒子" : L"收起盒子");
     AppendMenuW(menu, MF_STRING, kCmdRename, L"重命名（直接输入，回车确认）");
+    AppendMenuW(menu, MF_STRING, kCmdMerge, L"与其他盒子合并成标签盒");
     AppendMenuW(menu, MF_STRING, kCmdOpenFolder, L"在资源管理器中打开目录");
     AppendMenuW(menu, MF_STRING, kCmdGroup, grouped_ ? L"关闭盒内分类" : L"按类型分标签卡");
 
@@ -533,6 +535,11 @@ void Box::ShowContextMenu(POINT screenPt) {
             break;
         case kCmdRename:
             BeginRename();
+            break;
+        case kCmdMerge:
+            // 成员关系在布局里，得由界面实例来改；坐标打包进 lParam 传过去。
+            PostMessageW(TheTrayWnd(), WM_APP_MERGE_MENU, reinterpret_cast<WPARAM>(hwnd_),
+                         MAKELPARAM(static_cast<WORD>(screenPt.x), static_cast<WORD>(screenPt.y)));
             break;
         case kCmdUndo: {
             std::wstring err;
