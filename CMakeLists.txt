@@ -8,7 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # scripts\package.cmd 从构建目录里的 version.txt 读同一个值来命名发布产物。
 # 这里故意不用 CACHE：cache 会记住上一次配置时的值，改了这一行也会被旧值盖掉，
 # 出现"版本号改了、包名还是上一个"这种事。
-set(DESKORG_VERSION "1.2.0")
+set(DESKORG_VERSION "1.2.1")
 string(REPLACE "." ";" DESKORG_VERSION_PARTS "${DESKORG_VERSION}")
 list(LENGTH DESKORG_VERSION_PARTS DESKORG_VERSION_PARTS_COUNT)
 if(NOT DESKORG_VERSION_PARTS_COUNT EQUAL 3)
