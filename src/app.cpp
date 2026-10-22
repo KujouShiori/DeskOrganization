@@ -596,7 +596,50 @@ static void TouchFile(const std::wstring& path, const char* content) {
     CloseHandle(h);
 }
 
-struct Check { const char* name; bool ok; std::string detail; };
+struct Check { const char* name; bool ok; std::string detail; bool skipped = false; };
+
+// 有一小撮断言只能往真实屏幕上取样才有意义：窗口能创建、能命中测试、Direct2D 也报告画完了，
+// 但屏幕上根本没把它合成出来——CI 的执行环境就是这样。那种机器上把这几条记成 SKIP，
+// 其余断言照常把关；既不假装通过，也不让整条流水线因为环境没有桌面而红掉。
+static bool ScreenSamplingWorks() {
+    static int cached = -1;
+    if (cached >= 0) return cached == 1;
+    cached = 0;
+
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof wc;
+    wc.lpfnWndProc = DefWindowProcW;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"DeskOrgProbe";
+    wc.hbrBackground = CreateSolidBrush(RGB(3, 1, 2));
+    if (!RegisterClassExW(&wc)) return false;
+
+    HWND probe = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, wc.lpszClassName, L"DeskOrgProbe", WS_POPUP, 120,
+                                 120, 60, 60, nullptr, nullptr, wc.hInstance, nullptr);
+    if (probe) {
+        ShowWindow(probe, SW_SHOWNOACTIVATE);
+        UpdateWindow(probe);
+        PumpMessages(250);
+        const POINT pt{150, 150};
+        const bool owned = WindowFromPoint(pt) == probe;
+        HDC dc = GetDC(nullptr);
+        const COLORREF got = dc ? GetPixel(dc, pt.x, pt.y) : CLR_INVALID;
+        if (dc) ReleaseDC(nullptr, dc);
+        if (owned && got == RGB(3, 1, 2)) cached = 1;
+        DestroyWindow(probe);
+    }
+    UnregisterClassW(wc.lpszClassName, wc.hInstance);
+    if (wc.hbrBackground) DeleteObject(wc.hbrBackground);
+    return cached == 1;
+}
+
+static void AddScreenCheck(std::vector<Check>& checks, const char* name, bool ok, std::string detail = {}) {
+    if (!ScreenSamplingWorks()) {
+        checks.push_back(Check{name, false, "这台机器取不到屏幕像素，没跑", true});
+        return;
+    }
+    checks.push_back(Check{name, ok, std::move(detail)});
+}
 
 void AddRuleChecks(std::vector<Check>& checks);
 void AddUndoPersistenceChecks(std::vector<Check>& checks, const std::wstring& path);
@@ -655,7 +698,7 @@ int AppSelfTest() {
         "expected 60,60 got " + std::to_string(rc.left) + "," + std::to_string(rc.top));
 
     POINT probe{rc.left + 40, rc.top + 40};
-    add("hit_test_ours", WindowFromPoint(probe) == box.hwnd());
+    AddScreenCheck(checks, "hit_test_ours", WindowFromPoint(probe) == box.hwnd());
 
     // 被 DWM cloak 的窗口：IsWindowVisible、WindowFromPoint、EndDraw 全部正常，唯独屏幕不画。
     // 没有这条断言，下面的像素检查会在"看不见"的情况下给出误导性结论。
@@ -692,21 +735,21 @@ int AppSelfTest() {
         COLORREF body = GetPixel(screen, bodyPt.x, bodyPt.y);
         COLORREF title = GetPixel(screen, titlePt.x, titlePt.y);
         ReleaseDC(nullptr, screen);
-        add("sample_points_are_ours", bodyOwned && titleOwned,
+        AddScreenCheck(checks, "sample_points_are_ours", bodyOwned && titleOwned,
             "body point owned=" + std::to_string(bodyOwned) + " title point owned=" + std::to_string(titleOwned));
         char d[160];
         snprintf(d, sizeof d, "body=%02X%02X%02X title=%02X%02X%02X cloaked=%lu", GetRValue(body), GetGValue(body),
                  GetBValue(body), GetRValue(title), GetGValue(title), GetBValue(title),
                  static_cast<unsigned long>(g_cloaked));
         add("pixels_readable", body != CLR_INVALID && title != CLR_INVALID, d);
-        add("title_differs_from_body",
+        AddScreenCheck(checks, "title_differs_from_body",
             bodyOwned && titleOwned && abs(GetRValue(body) - GetRValue(title)) > 10 &&
                 abs(GetBValue(body) - GetBValue(title)) > 10,
             d);
-        add("body_is_blueish", bodyOwned && GetBValue(body) > GetRValue(body), d);
+        AddScreenCheck(checks, "body_is_blueish", bodyOwned && GetBValue(body) > GetRValue(body), d);
         // 不透明时内容区应当正好是我们的填充色 (0.13,0.16,0.21) 即 (33,41,54)。
         auto closeTo = [](int v, int expect, int tol) { return abs(v - expect) <= tol; };
-        add("body_matches_intended_fill",
+        AddScreenCheck(checks, "body_matches_intended_fill",
             bodyOwned && closeTo(GetRValue(body), 33, 24) && closeTo(GetGValue(body), 41, 24) &&
                 closeTo(GetBValue(body), 54, 24),
             d);
@@ -722,7 +765,7 @@ int AppSelfTest() {
         char d2[96];
         snprintf(d2, sizeof d2, "opaque=(%d,%d,%d) alpha=%d -> (%d,%d,%d)", GetRValue(body), GetGValue(body),
                  GetBValue(body), Box::kDefaultAlpha, GetRValue(blended), GetGValue(blended), GetBValue(blended));
-        add("translucency_active", stillOwned && moved, d2);
+        AddScreenCheck(checks, "translucency_active", stillOwned && moved, d2);
         box.SetAlpha(255);
     }
 
@@ -810,11 +853,11 @@ int AppSelfTest() {
                  static_cast<unsigned long>(fillPix), iconOwned ? 1 : 0, fillOwned ? 1 : 0);
         add("content_pixels_readable", iconPix != CLR_INVALID && fillPix != CLR_INVALID, d);
         add("content_box_painted", cbox.painted(), d);
-        add("content_hit_is_cbox", WindowFromPoint(probe) == cbox.hwnd(), d);
-        add("empty_area_is_plain_fill",
+        AddScreenCheck(checks, "content_hit_is_cbox", WindowFromPoint(probe) == cbox.hwnd(), d);
+        AddScreenCheck(checks, "empty_area_is_plain_fill",
             fillOwned && abs(GetRValue(fillPix) - 33) <= 24 && abs(GetGValue(fillPix) - 41) <= 24 &&
                 abs(GetBValue(fillPix) - 54) <= 24, d);
-        add("icon_pixel_differs_from_fill",
+        AddScreenCheck(checks, "icon_pixel_differs_from_fill",
             iconOwned && abs(GetRValue(iconPix) - GetRValue(fillPix)) + abs(GetGValue(iconPix) - GetGValue(fillPix)) +
                 abs(GetBValue(iconPix) - GetBValue(fillPix)) >
                 30,
@@ -1049,18 +1092,26 @@ int AppSelfTest() {
     Box::Unregister(hi);
 
     std::wstring report;
-    int failed = 0;
+    int failed = 0, skipped = 0;
     for (auto& c : checks) {
-        report += c.ok ? L"PASS  " : L"FAIL  ";
+        if (c.skipped) {
+            report += L"SKIP  ";
+            skipped++;
+        } else {
+            report += c.ok ? L"PASS  " : L"FAIL  ";
+        }
         report += Utf8ToWide(c.name);
         if (!c.detail.empty()) {
             report += L"  -- ";
             report += Utf8ToWide(c.detail.c_str());
         }
         report += L"\n";
-        if (!c.ok) failed++;
+        if (!c.ok && !c.skipped) failed++;
     }
-    report += L"\n" + std::to_wstring(checks.size() - failed) + L"/" + std::to_wstring(checks.size()) + L" passed\n";
+    const int ran = static_cast<int>(checks.size()) - skipped;
+    report += L"\n" + std::to_wstring(ran - failed) + L"/" + std::to_wstring(ran) + L" passed";
+    if (skipped > 0) report += L", " + std::to_wstring(skipped) + L" skipped";
+    report += L"\n";
 
     std::string u8 = WideToUtf8(report);
     HANDLE f = CreateFileW(L"selftest.txt", GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -1741,7 +1792,7 @@ void AddCategoryChecks(std::vector<Check>& checks, HINSTANCE hi) {
         snprintf(d, sizeof d, "pill=(%d,%d,%d) fill=(%d,%d,%d) owned=%d/%d delta=%d painted=%d", GetRValue(pill),
                  GetGValue(pill), GetBValue(pill), GetRValue(fill), GetGValue(fill), GetBValue(fill),
                  pillOwned ? 1 : 0, fillOwned ? 1 : 0, delta, box.painted() ? 1 : 0);
-        add("category_tab_actually_painted", pillOwned && fillOwned && delta > 20, d);
+        AddScreenCheck(checks, "category_tab_actually_painted", pillOwned && fillOwned && delta > 20, d);
     }
     add("category_tab_area_positive", box.tabAreaHeight() > 0);
     box.Destroy();
@@ -1946,7 +1997,7 @@ void AddSubChecks(std::vector<Check>& checks, HINSTANCE hi) {
                  want.title & 0xFF, GetRValue(gap), GetGValue(gap), GetBValue(gap), want.body >> 16,
                  (want.body >> 8) & 0xFF, want.body & 0xFF, pillOwned ? 1 : 0, gapOwned ? 1 : 0,
                  aggFlat.painted() ? 1 : 0);
-        add("sub_aggregate_first_row_painted",
+        AddScreenCheck(checks, "sub_aggregate_first_row_painted",
             pillOwned && gapOwned && colorNear(pill, want.title) && colorNear(gap, want.body) && aggFlat.painted(), d);
     }
     aggFlat.Destroy();
@@ -2050,7 +2101,7 @@ void AddSubChecks(std::vector<Check>& checks, HINSTANCE hi) {
                  want.title & 0xFF, GetRValue(gap), GetGValue(gap), GetBValue(gap), want.body >> 16,
                  (want.body >> 8) & 0xFF, want.body & 0xFF, pillOwned ? 1 : 0, gapOwned ? 1 : 0,
                  box.painted() ? 1 : 0);
-        add("sub_tab_actually_painted", pillOwned && gapOwned && pillIsTitle && gapIsBody && box.painted(), d);
+        AddScreenCheck(checks, "sub_tab_actually_painted", pillOwned && gapOwned && pillIsTitle && gapIsBody && box.painted(), d);
     }
     box.Destroy();
 
@@ -2235,7 +2286,7 @@ void AddThemeChecks(std::vector<Check>& checks, HINSTANCE hi) {
     COLORREF darkPix = sampleBody();
     bool darkRight = owned && abs(GetRValue(darkPix) - 33) <= 12 && abs(GetGValue(darkPix) - 41) <= 12 &&
                      abs(GetBValue(darkPix) - 54) <= 12;
-    add("theme_switch_live_renders", darkRight,
+    AddScreenCheck(checks, "theme_switch_live_renders", darkRight,
         "pixel=(" + std::to_string(GetRValue(darkPix)) + "," + std::to_string(GetGValue(darkPix)) + "," +
             std::to_string(GetBValue(darkPix)) + ")");
 
