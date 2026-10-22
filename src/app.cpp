@@ -598,9 +598,10 @@ static void TouchFile(const std::wstring& path, const char* content) {
 
 struct Check { const char* name; bool ok; std::string detail; bool skipped = false; };
 
-// 有一小撮断言只能往真实屏幕上取样才有意义：窗口能创建、能命中测试、Direct2D 也报告画完了，
-// 但屏幕上根本没把它合成出来——CI 的执行环境就是这样。那种机器上把这几条记成 SKIP，
-// 其余断言照常把关；既不假装通过，也不让整条流水线因为环境没有桌面而红掉。
+// 有一小撮断言只能往真实屏幕上取样才有意义。判"能不能取样"必须用和盒子一模一样的窗口样式：
+// 顶层 WS_POPUP + TOOLWINDOW + NOACTIVATE + LAYERED，压在 HWND_BOTTOM 上。CI 的执行环境里
+// 一个最顶层窗口是能取到的，盒子这种最背面半透明的窗口却取不到（WindowFromPoint 返回别的窗口，
+// 像素是桌面默认色），所以探针照着自己的真实形状来，别走捷径。
 static bool ScreenSamplingWorks() {
     static int cached = -1;
     if (cached >= 0) return cached == 1;
@@ -614,18 +615,31 @@ static bool ScreenSamplingWorks() {
     wc.hbrBackground = CreateSolidBrush(RGB(3, 1, 2));
     if (!RegisterClassExW(&wc)) return false;
 
-    HWND probe = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, wc.lpszClassName, L"DeskOrgProbe", WS_POPUP, 120,
-                                 120, 60, 60, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND probe = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, wc.lpszClassName,
+                                 L"DeskOrgProbe", WS_POPUP, 120, 120, 60, 60, nullptr, nullptr, wc.hInstance,
+                                 nullptr);
     if (probe) {
+        SetLayeredWindowAttributes(probe, 0, 255, LWA_ALPHA);
         ShowWindow(probe, SW_SHOWNOACTIVATE);
+        SetWindowPos(probe, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         UpdateWindow(probe);
-        PumpMessages(250);
-        const POINT pt{150, 150};
-        const bool owned = WindowFromPoint(pt) == probe;
+        PumpMessages(350);
+        // 多试几个位置、每个位置再重试几拍：真实桌面上这一格可能被别的窗口压着（自检过程中
+        // 就活着好几个盒子），也可能刚移动完还没来得及合成。全取不到才判为不可用。
+        const POINT spots[] = {{150, 150}, {630, 630}, {1030, 330}, {330, 930}, {1300, 700}};
         HDC dc = GetDC(nullptr);
-        const COLORREF got = dc ? GetPixel(dc, pt.x, pt.y) : CLR_INVALID;
+        for (POINT center : spots) {
+            SetWindowPos(probe, HWND_BOTTOM, center.x - 30, center.y - 30, 60, 60, SWP_NOACTIVATE | SWP_NOZORDER);
+            for (int attempt = 0; attempt < 4 && cached != 1; ++attempt) {
+                RedrawWindow(probe, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ERASE);
+                PumpMessages(200);
+                const bool owned = WindowFromPoint(center) == probe;
+                const COLORREF got = dc ? GetPixel(dc, center.x, center.y) : CLR_INVALID;
+                if (owned && got == RGB(3, 1, 2)) cached = 1;
+            }
+            if (cached == 1) break;
+        }
         if (dc) ReleaseDC(nullptr, dc);
-        if (owned && got == RGB(3, 1, 2)) cached = 1;
         DestroyWindow(probe);
     }
     UnregisterClassW(wc.lpszClassName, wc.hInstance);

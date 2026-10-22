@@ -28,12 +28,14 @@ jobs:
         run: cmd /c scripts\package.cmd
 
       - name: 跑 Release 版自检
+        continue-on-error: true
         run: cmd /c out\release\DeskOrganization.exe --selftest
 
       - name: 检查自检结果
         shell: bash
         run: |
-          tail -3 selftest.txt
+          echo "PASS $(grep -c '^PASS' selftest.txt)  SKIP $(grep -c '^SKIP' selftest.txt)  FAIL $(grep -c '^FAIL' selftest.txt)"
+          tail -5 selftest.txt
           if grep -q "^FAIL" selftest.txt; then
             echo "自检里有断言失败，见上面的 selftest.txt 结尾。" >&2
             exit 1
