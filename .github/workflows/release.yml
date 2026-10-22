@@ -1,0 +1,71 @@
+name: Release
+
+# 打一个 vX.Y.Z 的标签就出包并发布：Release 构建、免安装 zip、安装包，全部在
+# windows-latest 上跑（那里装了 Inno Setup）。标签必须和 CMakeLists.txt 里的
+# DESKORG_VERSION 对上，对不上直接失败，避免发出名字和内容不一致的包。
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的标签，例如 v1.2.1'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  package-and-publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 打包（Release 构建 + 免安装 zip + 安装包）
+        run: cmd /c scripts\package.cmd
+
+      - name: 跑 Release 版自检
+        run: cmd /c out\release\DeskOrganization.exe --selftest
+
+      - name: 检查自检结果
+        shell: bash
+        run: |
+          tail -3 selftest.txt
+          if grep -q "^FAIL" selftest.txt; then
+            echo "自检里有断言失败，见上面的 selftest.txt 结尾。" >&2
+            exit 1
+          fi
+
+      - name: 上传构建产物（无论发布是否成功都留一份）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-out
+          path: |
+            out/dist/
+            selftest.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: 发布到 GitHub Releases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          TAG="${INPUT_TAG:-${GITHUB_REF_NAME}}"
+          VER="$(tr -d '\r\n' < out/release/version.txt)"
+          if [ "v${VER}" != "${TAG}" ]; then
+            echo "标签 ${TAG} 和 CMakeLists.txt 里的 DESKORG_VERSION（${VER}）不一致，停在这里。" >&2
+            exit 1
+          fi
+          gh release view "${TAG}" >/dev/null 2>&1 || \
+            gh release create "${TAG}" --title "${TAG}" --notes-file RELEASE-NOTES.md --commitish "${GITHUB_SHA}"
+          gh release upload "${TAG}" \
+            "out/dist/DeskOrganization-${VER}-win-x64-setup.exe" \
+            "out/dist/DeskOrganization-${VER}-win-x64-portable.zip" --clobber
+          gh release view "${TAG}"

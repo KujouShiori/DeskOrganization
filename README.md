@@ -13,10 +13,17 @@ Windows 11 桌面整理工具。桌面上开一块块盒子，文件拖进去就
 
 发布用的产物用 scripts\package.cmd：先按 Release 配置编译（开优化，C 运行库静态链接进 exe，
 所以免安装版在没有装 VC++ 运行库的机器上也能直接双击），再压出免安装 zip、编出安装包，
-两者都放在 out\dist\。安装包需要另外安装 Inno Setup 6，脚本按默认路径调用它。
+两者都放在 out\dist\。安装包需要另外安装 Inno Setup 6，脚本按 %ProgramFiles(x86)%\Inno Setup 6 找它，装在别处就用
+DESKORG_ISCC 指过去。编译器和 CMake、Ninja 的位置由脚本自己找（先问 vswhere，再用 PATH），
+所以装 Build Tools 或者完整版 Visual Studio 都能直接编。
 发布版本号写在 CMakeLists.txt 的 DESKORG_VERSION 里，格式 a.b.c，只此一处：exe 内的版本
 资源、免安装包的压缩包名、安装包里显示的版本都由它生成，配置时抄到构建目录的 version.txt
 供打包脚本读，所以不会出现包名和程序属性页版本不一致。
+
+正式发布的包由 GitHub Actions 在 windows-latest 上构建：推一个 vX.Y.Z 标签，工作流跑
+scripts\package.cmd 出两个包，再用 Release 版跑一遍自检，核对标签和 DESKORG_VERSION 对得上，
+然后把安装包和 zip 挂到该标签的 Release 上。标签和版本号不一致会直接失败，不会发出
+名字和内容对不上的包。发布说明取仓库根目录的 RELEASE-NOTES.md。
 
 程序自己的图标在 resources\DeskOrganization.ico，画法和托盘图标共用 src\iconres.cpp 里那套
 像素函数（16/20/24/32/40/48/64/128 八档，.ico 里用位图条目，rc.exe 不收 PNG 压缩的图标）。

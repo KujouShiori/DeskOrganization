@@ -9,9 +9,12 @@ rem Batch files here stay ASCII only: cmd parses them in the console codepage, a
 rem non-ASCII bytes inside a rem line break parsing.
 
 set "NAME=DeskOrganization"
-set "ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 set "DIST=%~dp0..\out\dist"
 set "REL=%~dp0..\out\release"
+rem DESKORG_ISCC overrides the compiler location, which is what a CI image with Inno
+rem installed elsewhere needs.
+set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+if defined DESKORG_ISCC set "ISCC=%DESKORG_ISCC%"
 
 call "%~dp0build_release.cmd" || exit /b 1
 if not exist "%REL%\%NAME%.exe" exit /b 1
@@ -40,5 +43,5 @@ endlocal
 exit /b 0
 
 :no_inno
-echo Inno Setup was not found where ISCC points. Install Inno Setup 6, or edit that path.
+echo Inno Setup was not found where ISCC points. Install Inno Setup 6, or set DESKORG_ISCC.
 exit /b 1
