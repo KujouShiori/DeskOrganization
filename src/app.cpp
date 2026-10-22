@@ -124,6 +124,7 @@ bool App::Init() {
     AddTray();
 
     timer_ = SetTimer(tray_, kHeartbeat, 1500, nullptr);
+    inited_ = true;
     Log(L"启动完成，盒子数=%zu", boxes_.size());
     return true;
 }
@@ -145,16 +146,21 @@ void App::Shutdown() {
         icon_ = nullptr;
         iconOwned_ = false;
     }
-    // 顺序要紧：SyncLayoutFromBoxes 是"把还活着的盒子抄回布局"，它先 clear 再按窗口重建。
-    // 放在 Destroy 之后的话，退出的那一刻窗口全没了，抄回来的就是空表，
-    // 接着 LayoutSave 会把用户所有盒子的定义从 layout.ini 里抹掉。
-    SyncLayoutFromBoxes();
+    // 只有 Init 真的走到底了才允许回写配置。Init 中途失败时 boxes_ 是空的，而
+    // SyncLayoutFromBoxes 是"按还活着的窗口重建盒子列表"，于是会把用户所有 [box:] 段
+    // 删掉；main.cpp 在 Init 失败的那条路上同样会调用 Shutdown，所以这里必须挡一下。
+    const bool mayWriteConfig = inited_;
+    if (mayWriteConfig) SyncLayoutFromBoxes();
     for (auto& b : boxes_) b->Destroy();
     boxes_.clear();
     // 干净退出就把用户的桌面图标恢复；下次启动再按 hide_icons 设置隐藏。
     IconLayerSet(false);
-    layout_.hideIcons = false;
-    LayoutSave(layout_);
+    if (mayWriteConfig) {
+        layout_.hideIcons = false;
+        LayoutSave(layout_);
+    } else {
+        Log(L"初始化没完成，这次退出不写配置，避免把用户的盒子抹掉");
+    }
     HINSTANCE hi = GetModuleHandleW(nullptr);
     Box::Unregister(hi);
     UnregisterClassW(kTrayClass, hi);
@@ -1279,7 +1285,9 @@ void App::RunRules(bool fullSweep) {
         for (auto& b : boxes_) {
             BoxConfig c;
             b->Current(c);
-            targets.push_back(OrganizeTarget{c.name, b->folder()});
+            // 规则永远归到盒子的根目录，不跟着界面上正在看的第二层走：
+            // 命中哪些文件是配置决定的，落点不该取决于用户此刻翻到了哪个子文件夹。
+            targets.push_back(OrganizeTarget{c.name, b->baseFolder()});
         }
     };
     collect();

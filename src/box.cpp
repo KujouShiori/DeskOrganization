@@ -1011,7 +1011,12 @@ void Box::EndRename(bool commit) {
     size_t b = text.find_first_not_of(L" \t\r\n");
     size_t e = text.find_last_not_of(L" \t\r\n");
     text = b == std::wstring::npos ? std::wstring() : text.substr(b, e - b + 1);
-    if (commit && !text.empty() && text != cfg_.name) committedRename_ = text;
+    if (commit && !text.empty() && text != cfg_.name) {
+        committedRename_ = text;
+        // 光存下来没人会来取：改名字要落到 layout.ini，只有界面实例拿得到布局，
+        // 所以在这里递一句过去，由它读走 committedRename_。
+        if (HWND tray = TheTrayWnd()) PostMessageW(tray, WM_APP_RENAME_BOX, reinterpret_cast<WPARAM>(hwnd_), 0);
+    }
     if (hwnd_) SetFocus(hwnd_);
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }

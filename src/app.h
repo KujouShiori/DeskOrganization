@@ -66,6 +66,8 @@ class App {
     Layout layout_{};
     std::wstring boxRoot_;
     bool hidden_ = false;
+    // Init 是否走到了最后。没走完就不许把任何东西写回 layout.ini。
+    bool inited_ = false;
     UINT_PTR timer_ = 0;
     int tick_ = 0;
     inline static App* the_ = nullptr;
